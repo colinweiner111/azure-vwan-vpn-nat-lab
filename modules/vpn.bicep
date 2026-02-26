@@ -15,6 +15,51 @@ param hub1NatExternalRange string
 @description('Public IP range for Hub2 NAT translation')
 param hub2NatExternalRange string
 
+@description('NAT rule type — Static (1:1 same-size prefix mapping) or Dynamic (many-to-few with port translation)')
+@allowed(['Static', 'Dynamic'])
+param natType string = 'Static'
+
+@description('Use APIPA (169.254.x.x) addresses for BGP peering over VPN tunnels')
+param useApipaBgp bool = true
+
+@description('Branch APIPA BGP address (used for all hub BGP sessions)')
+param branchApipaBgpIp string = '169.254.21.2'
+
+@description('Hub1 Instance0 APIPA BGP address')
+param hub1ApipaInstance0 string = '169.254.21.1'
+
+@description('Hub1 Instance1 APIPA BGP address')
+param hub1ApipaInstance1 string = '169.254.22.1'
+
+@description('Hub2 Instance0 APIPA BGP address')
+param hub2ApipaInstance0 string = '169.254.21.5'
+
+@description('Hub2 Instance1 APIPA BGP address')
+param hub2ApipaInstance1 string = '169.254.22.5'
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  Variables                                                                 ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+var branchGwName = 'branch1-vpngw'
+
+// Construct the branch gateway IP config resource ID for APIPA BGP references
+var branchGwIpConfigId = resourceId('Microsoft.Network/virtualNetworkGateways/ipConfigurations', branchGwName, 'default')
+
+// Branch gateway BGP settings — conditionally include APIPA custom addresses
+var branchBgpSettings = union({
+  asn: 65010
+}, useApipaBgp ? {
+  bgpPeeringAddresses: [
+    {
+      ipconfigurationId: branchGwIpConfigId
+      customBgpIpAddresses: [
+        branchApipaBgpIp
+      ]
+    }
+  ]
+} : {})
+
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  Branch VPN Gateway                                                        ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -31,7 +76,7 @@ resource branchPublicIp 'Microsoft.Network/publicIPAddresses@2023-11-01' = {
 }
 
 resource branchVpnGateway 'Microsoft.Network/virtualNetworkGateways@2023-11-01' = {
-  name: 'branch1-vpngw'
+  name: branchGwName
   location: location
   properties: {
     gatewayType: 'Vpn'
@@ -41,9 +86,7 @@ resource branchVpnGateway 'Microsoft.Network/virtualNetworkGateways@2023-11-01' 
       tier: 'VpnGw1'
     }
     enableBgp: true
-    bgpSettings: {
-      asn: 65010
-    }
+    bgpSettings: branchBgpSettings
     ipConfigurations: [
       {
         name: 'default'
@@ -97,17 +140,17 @@ resource hub2VpnGw 'Microsoft.Network/vpnGateways@2023-11-01' = {
 // ║  VPN NAT Rules — Hub1                                                      ║
 // ║                                                                            ║
 // ║  IngressSnat: Branch → Hub traffic. Source IP translated from private to    ║
-// ║               public range so spokes see branch as 203.0.113.0/24.         ║
+// ║               public range so spokes see branch as the external range.     ║
 // ║                                                                            ║
-// ║  EgressSnat:  Hub → Branch traffic. Destination IP translated from public   ║
-// ║               range back to private so branch receives return traffic.      ║
+// ║  Static: 1:1 mapping, same-size prefixes, both sides can initiate.         ║
+// ║  Dynamic: Many-to-few with PAT, only NAT'd side can initiate.             ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 resource hub1IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
   parent: hub1VpnGw
   name: 'IngressSnat-Branch1'
   properties: {
-    type: 'Static'
+    type: natType
     mode: 'IngressSnat'
     internalMappings: [
       {
@@ -122,20 +165,18 @@ resource hub1IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
   }
 }
 
-
-
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  VPN NAT Rules — Hub2                                                      ║
 // ║                                                                            ║
 // ║  Same pattern as Hub1 but maps to a different public range                 ║
-// ║  (198.51.100.0/24) demonstrating per-hub NAT independence.                 ║
+// ║  demonstrating per-hub NAT independence.                                   ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 resource hub2IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
   parent: hub2VpnGw
   name: 'IngressSnat-Branch1'
   properties: {
-    type: 'Static'
+    type: natType
     mode: 'IngressSnat'
     internalMappings: [
       {
@@ -149,8 +190,6 @@ resource hub2IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
     ]
   }
 }
-
-
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  VPN Site for Branch1                                                      ║
@@ -178,7 +217,7 @@ resource vpnSite 'Microsoft.Network/vpnSites@2023-11-01' = {
           ipAddress: branchPublicIp.properties.ipAddress
           bgpProperties: {
             asn: 65010
-            bgpPeeringAddress: branchVpnGateway.properties.bgpSettings.bgpPeeringAddresses[0].defaultBgpIpAddresses[0]
+            bgpPeeringAddress: useApipaBgp ? branchApipaBgpIp : branchVpnGateway.properties.bgpSettings.bgpPeeringAddresses[0].defaultBgpIpAddresses[0]
           }
           linkProperties: {
             linkSpeedInMbps: 50
@@ -190,7 +229,10 @@ resource vpnSite 'Microsoft.Network/vpnSites@2023-11-01' = {
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  Hub → Branch VPN Connections (with NAT rules attached)                    ║
+// ║  Hub → Branch VPN Connections (with NAT rules + optional APIPA BGP)        ║
+// ║                                                                            ║
+// ║  When APIPA BGP is enabled, vpnGatewayCustomBgpAddresses maps each hub     ║
+// ║  gateway instance to an APIPA address for BGP peering.                     ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01' = {
@@ -210,6 +252,16 @@ resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
           }
           sharedKey: 'abc123'
           enableBgp: true
+          vpnGatewayCustomBgpAddresses: useApipaBgp ? [
+            {
+              ipConfigurationId: '${hub1VpnGw.id}/ipConfigurations/Instance0'
+              customBgpIpAddress: hub1ApipaInstance0
+            }
+            {
+              ipConfigurationId: '${hub1VpnGw.id}/ipConfigurations/Instance1'
+              customBgpIpAddress: hub1ApipaInstance1
+            }
+          ] : []
           ingressNatRules: [
             {
               id: hub1IngressNat.id
@@ -241,6 +293,16 @@ resource hub2BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
           }
           sharedKey: 'abc123'
           enableBgp: true
+          vpnGatewayCustomBgpAddresses: useApipaBgp ? [
+            {
+              ipConfigurationId: '${hub2VpnGw.id}/ipConfigurations/Instance0'
+              customBgpIpAddress: hub2ApipaInstance0
+            }
+            {
+              ipConfigurationId: '${hub2VpnGw.id}/ipConfigurations/Instance1'
+              customBgpIpAddress: hub2ApipaInstance1
+            }
+          ] : []
           ingressNatRules: [
             {
               id: hub2IngressNat.id
@@ -257,6 +319,10 @@ resource hub2BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  Local Network Gateways + Branch-side VPN Connections                      ║
+// ║                                                                            ║
+// ║  When APIPA BGP is enabled, the LNGs use APIPA addresses for BGP          ║
+// ║  peering instead of the hub's default private IPs. The branch connections  ║
+// ║  specify which APIPA address the branch gateway uses for each tunnel.      ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 // Local Gateways for Hub1
@@ -267,7 +333,7 @@ resource lngHub1Gw1 'Microsoft.Network/localNetworkGateways@2023-11-01' = {
     gatewayIpAddress: hub1VpnGw.properties.bgpSettings.bgpPeeringAddresses[0].tunnelIpAddresses[0]
     bgpSettings: {
       asn: 65515
-      bgpPeeringAddress: hub1VpnGw.properties.bgpSettings.bgpPeeringAddresses[0].defaultBgpIpAddresses[0]
+      bgpPeeringAddress: useApipaBgp ? hub1ApipaInstance0 : hub1VpnGw.properties.bgpSettings.bgpPeeringAddresses[0].defaultBgpIpAddresses[0]
     }
   }
 }
@@ -279,7 +345,7 @@ resource lngHub1Gw2 'Microsoft.Network/localNetworkGateways@2023-11-01' = {
     gatewayIpAddress: hub1VpnGw.properties.bgpSettings.bgpPeeringAddresses[1].tunnelIpAddresses[0]
     bgpSettings: {
       asn: 65515
-      bgpPeeringAddress: hub1VpnGw.properties.bgpSettings.bgpPeeringAddresses[1].defaultBgpIpAddresses[0]
+      bgpPeeringAddress: useApipaBgp ? hub1ApipaInstance1 : hub1VpnGw.properties.bgpSettings.bgpPeeringAddresses[1].defaultBgpIpAddresses[0]
     }
   }
 }
@@ -292,7 +358,7 @@ resource lngHub2Gw1 'Microsoft.Network/localNetworkGateways@2023-11-01' = {
     gatewayIpAddress: hub2VpnGw.properties.bgpSettings.bgpPeeringAddresses[0].tunnelIpAddresses[0]
     bgpSettings: {
       asn: 65515
-      bgpPeeringAddress: hub2VpnGw.properties.bgpSettings.bgpPeeringAddresses[0].defaultBgpIpAddresses[0]
+      bgpPeeringAddress: useApipaBgp ? hub2ApipaInstance0 : hub2VpnGw.properties.bgpSettings.bgpPeeringAddresses[0].defaultBgpIpAddresses[0]
     }
   }
 }
@@ -304,12 +370,12 @@ resource lngHub2Gw2 'Microsoft.Network/localNetworkGateways@2023-11-01' = {
     gatewayIpAddress: hub2VpnGw.properties.bgpSettings.bgpPeeringAddresses[1].tunnelIpAddresses[0]
     bgpSettings: {
       asn: 65515
-      bgpPeeringAddress: hub2VpnGw.properties.bgpSettings.bgpPeeringAddresses[1].defaultBgpIpAddresses[0]
+      bgpPeeringAddress: useApipaBgp ? hub2ApipaInstance1 : hub2VpnGw.properties.bgpSettings.bgpPeeringAddresses[1].defaultBgpIpAddresses[0]
     }
   }
 }
 
-// VPN Connections from Branch to Hubs
+// VPN Connections from Branch to Hubs (with optional APIPA BGP)
 resource branchToHub1Gw1Conn 'Microsoft.Network/connections@2023-11-01' = {
   name: 'branch1-to-${hub1Name}-gw1'
   location: location
@@ -323,6 +389,12 @@ resource branchToHub1Gw1Conn 'Microsoft.Network/connections@2023-11-01' = {
     }
     sharedKey: 'abc123'
     enableBgp: true
+    gatewayCustomBgpIpAddresses: useApipaBgp ? [
+      {
+        ipConfigurationId: branchGwIpConfigId
+        customBgpIpAddress: branchApipaBgpIp
+      }
+    ] : []
   }
 }
 
@@ -339,6 +411,12 @@ resource branchToHub1Gw2Conn 'Microsoft.Network/connections@2023-11-01' = {
     }
     sharedKey: 'abc123'
     enableBgp: true
+    gatewayCustomBgpIpAddresses: useApipaBgp ? [
+      {
+        ipConfigurationId: branchGwIpConfigId
+        customBgpIpAddress: branchApipaBgpIp
+      }
+    ] : []
   }
 }
 
@@ -355,6 +433,12 @@ resource branchToHub2Gw1Conn 'Microsoft.Network/connections@2023-11-01' = {
     }
     sharedKey: 'abc123'
     enableBgp: true
+    gatewayCustomBgpIpAddresses: useApipaBgp ? [
+      {
+        ipConfigurationId: branchGwIpConfigId
+        customBgpIpAddress: branchApipaBgpIp
+      }
+    ] : []
   }
 }
 
@@ -371,6 +455,12 @@ resource branchToHub2Gw2Conn 'Microsoft.Network/connections@2023-11-01' = {
     }
     sharedKey: 'abc123'
     enableBgp: true
+    gatewayCustomBgpIpAddresses: useApipaBgp ? [
+      {
+        ipConfigurationId: branchGwIpConfigId
+        customBgpIpAddress: branchApipaBgpIp
+      }
+    ] : []
   }
 }
 
@@ -384,3 +474,6 @@ output hub2VpnGwId string = hub2VpnGw.id
 output vpnSiteId string = vpnSite.id
 output hub1IngressNatId string = hub1IngressNat.id
 output hub2IngressNatId string = hub2IngressNat.id
+output natRuleType string = natType
+output apipaBgpEnabled bool = useApipaBgp
+output branchApipaBgpAddress string = useApipaBgp ? branchApipaBgpIp : 'N/A (using default BGP IPs)'

@@ -11,3 +11,5 @@
 *.history
 # Zip artifacts
 *.zip
+
+main.json

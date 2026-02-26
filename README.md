@@ -2,7 +2,7 @@
 
 > Based on [azure-vwan-secure-hub-lab](https://github.com/colinweiner111/azure-vwan-secure-hub-lab), extended with **VPN S2S NAT rules** that translate branch private address space to public IP ranges.
 
-This lab demonstrates **Static NAT on Azure Virtual WAN VPN Gateways** using public (non-RFC 1918) IP ranges as the external/translated address space. It follows the patterns described in [Configure NAT rules for your Virtual WAN VPN gateway](https://learn.microsoft.com/en-us/azure/virtual-wan/nat-rules-vpn-gateway).
+This lab demonstrates **VPN NAT (Static or Dynamic) on Azure Virtual WAN VPN Gateways** using public (non-RFC 1918) IP ranges as the external/translated address space, with optional **APIPA BGP peering** (169.254.x.x). It follows the patterns described in [Configure NAT rules for your Virtual WAN VPN gateway](https://learn.microsoft.com/en-us/azure/virtual-wan/nat-rules-vpn-gateway).
 
 ---
 
@@ -62,9 +62,16 @@ The lab uses [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) documenta
 
 ## How VPN NAT Works
 
-### NAT Rule Type
+### NAT Rule Type (Static vs Dynamic)
 
-Each hub VPN gateway has one **Static IngressSnat** rule per branch connection. Static IngressSnat automatically handles both directions — source NAT on ingress and reverse destination NAT on egress:
+Each hub VPN gateway has one **IngressSnat** rule per branch connection. The type is configurable:
+
+| Type | Mapping | Who Can Initiate | External Prefix |
+|------|---------|------------------|-----------------|
+| **Static** | 1:1, same-size prefixes | Both sides | Must match internal size (/24→/24) |
+| **Dynamic** | Many-to-few with PAT | Only NAT’d side (branch) | Can be smaller (/24→/32) |
+
+Static IngressSnat automatically handles both directions — source NAT on ingress and reverse destination NAT on egress:
 
 | Rule | Traffic Direction | Effect |
 |---|---|---|
@@ -72,6 +79,20 @@ Each hub VPN gateway has one **Static IngressSnat** rule per branch connection. 
 | *(reverse)* | Hub → Branch | Destination IP `203.0.113.x` / `198.51.100.x` translated back to `10.100.0.x` automatically |
 
 > **Note:** A separate EgressSnat rule is **not needed** for static NAT. Using both IngressSnat and EgressSnat with the same external mapping on the same connection will cause an overlapping address space error.
+
+### APIPA BGP Peering (169.254.x.x)
+
+When `useApipaBgp` is enabled (default), all BGP sessions use APIPA link-local addresses instead of the gateway’s default private IPs. This matches real-world B2B VPN deployments (like the Azure-to-Azure connectivity worksheets used by financial institutions).
+
+| Peer | APIPA Address | Role |
+|------|--------------|------|
+| Branch (all sessions) | 169.254.21.2 | Branch VPN Gateway |
+| Hub1 Instance 0 | 169.254.21.1 | vWAN VPN Gateway |
+| Hub1 Instance 1 | 169.254.22.1 | vWAN VPN Gateway |
+| Hub2 Instance 0 | 169.254.21.5 | vWAN VPN Gateway |
+| Hub2 Instance 1 | 169.254.22.5 | vWAN VPN Gateway |
+
+Azure supports APIPA addresses in the **169.254.21.0/24** and **169.254.22.0/24** ranges. All addresses are configurable via parameters.
 
 ### BGP Route Translation
 
@@ -122,6 +143,18 @@ cd azure-vwan-vpn-nat-lab
     -BranchInternalRange "10.100.0.0/24" `
     -Hub1NatExternalRange "203.0.113.0/24" `
     -Hub2NatExternalRange "198.51.100.0/24"
+
+# Deploy with Dynamic NAT (many-to-few with port translation)
+.\deploy-bicep.ps1 `
+    -ResourceGroupName vwan-vpn-nat-lab `
+    -Location westus3 `
+    -NatType Dynamic `
+    -BranchInternalRange "10.100.0.0/24" `
+    -Hub1NatExternalRange "203.0.113.1/32" `
+    -Hub2NatExternalRange "198.51.100.1/32"
+
+# Deploy without APIPA BGP (use default hub BGP IPs instead)
+.\deploy-bicep.ps1 -UseApipaBgp $false
 ```
 
 Deployment takes approximately **60–90 minutes** (VPN gateways are the bottleneck).
@@ -138,6 +171,8 @@ Deployment takes approximately **60–90 minutes** (VPN gateways are the bottlen
 | `BranchInternalRange` | `10.100.0.0/24` | Branch subnet to NAT (pre-NAT) |
 | `Hub1NatExternalRange` | `203.0.113.0/24` | Hub1 public NAT range (post-NAT) |
 | `Hub2NatExternalRange` | `198.51.100.0/24` | Hub2 public NAT range (post-NAT) |
+| `NatType` | `Static` | NAT rule type: `Static` (1:1 mapping) or `Dynamic` (many-to-few PAT) |
+| `UseApipaBgp` | `$true` | Use APIPA addresses (169.254.x.x) for BGP peering |
 
 ---
 
@@ -147,8 +182,9 @@ Deployment takes approximately **60–90 minutes** (VPN gateways are the bottlen
 - **4 Spoke VNets** (2 per hub) with VMs
 - **1 Branch VNet** with VPN Gateway (BGP ASN 65010)
 - **2 Hub VPN Gateways** with:
-  - `enableBgpRouteTranslation: true`
-  - Static IngressSnat NAT rules per branch connection
+  - `enableBgpRouteTranslationForNat: true`
+  - Configurable IngressSnat NAT rules (Static or Dynamic)
+  - Optional APIPA BGP custom peering addresses (169.254.x.x)
 - **2 Azure Firewalls** (Hub SKU) with Routing Intent (InternetAndPrivate)
 - **Azure Bastion** (Standard, IP-based connections)
 - **5 Ubuntu VMs** with traceroute pre-installed

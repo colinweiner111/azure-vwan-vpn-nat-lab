@@ -26,7 +26,14 @@ param(
     [string]$Hub1NatExternalRange = "203.0.113.0/24",
 
     [Parameter(Mandatory=$false)]
-    [string]$Hub2NatExternalRange = "198.51.100.0/24"
+    [string]$Hub2NatExternalRange = "198.51.100.0/24",
+
+    [Parameter(Mandatory=$false)]
+    [ValidateSet('Static', 'Dynamic')]
+    [string]$NatType = "Static",
+
+    [Parameter(Mandatory=$false)]
+    [bool]$UseApipaBgp = $true
 )
 
 # Check if logged into Azure
@@ -57,6 +64,8 @@ Write-Host "  VPN NAT Configuration:" -ForegroundColor Yellow
 Write-Host "    Branch Internal Range:    $BranchInternalRange"
 Write-Host "    Hub1 NAT External Range:  $Hub1NatExternalRange  (RFC 5737 TEST-NET-3)"
 Write-Host "    Hub2 NAT External Range:  $Hub2NatExternalRange  (RFC 5737 TEST-NET-2)"
+Write-Host "    NAT Type:                 $NatType"
+Write-Host "    APIPA BGP Peering:        $(if ($UseApipaBgp) { 'Enabled (169.254.x.x)' } else { 'Disabled (default IPs)' })"
 
 Write-Host "`nStarting Bicep deployment (this will take approximately 60-90 minutes)..." -ForegroundColor Yellow
 Write-Host "Components to deploy:" -ForegroundColor Cyan
@@ -64,7 +73,8 @@ Write-Host "  - Virtual WAN with 2 secure hubs"
 Write-Host "  - 6 Virtual Networks (Branch, Bastion, 4 Spokes)"
 Write-Host "  - 5 Ubuntu VMs"
 Write-Host "  - Branch VPN Gateway + 2 Hub VPN Gateways"
-Write-Host "  - VPN NAT Rules (IngressSnat + EgressSnat per hub)"
+Write-Host "  - VPN NAT Rules (IngressSnat per hub, $NatType type)"
+Write-Host "  - BGP Peering: $(if ($UseApipaBgp) { 'APIPA (169.254.x.x)' } else { 'Default hub IPs' })"
 Write-Host "  - 2 Azure Firewalls ($FirewallSku) with InternetAndPrivate routing"
 Write-Host "  - Azure Bastion with IP-based connection"
 
@@ -86,15 +96,17 @@ try {
                      firewallSku=$FirewallSku `
                      branchInternalRange=$BranchInternalRange `
                      hub1NatExternalRange=$Hub1NatExternalRange `
-                     hub2NatExternalRange=$Hub2NatExternalRange
+                     hub2NatExternalRange=$Hub2NatExternalRange `
+                     natType=$NatType `
+                     useApipaBgp=$($UseApipaBgp.ToString().ToLower())
     
     if ($LASTEXITCODE -eq 0) {
         Write-Host "`n======================================" -ForegroundColor Green
         Write-Host " Deployment completed successfully!" -ForegroundColor Green
         Write-Host "======================================" -ForegroundColor Green
         
-        Write-Host "`nVPN NAT Translation Summary:" -ForegroundColor Yellow
-        Write-Host "  Hub1: $BranchInternalRange --> $Hub1NatExternalRange"
+        Write-Host "`nVPN NAT Translation Summary:" -ForegroundColor Yellow        Write-Host "  NAT Type: $NatType"
+        Write-Host "  APIPA BGP: $(if ($UseApipaBgp) { 'Enabled' } else { 'Disabled' })"        Write-Host "  Hub1: $BranchInternalRange --> $Hub1NatExternalRange"
         Write-Host "  Hub2: $BranchInternalRange --> $Hub2NatExternalRange"
         
         Write-Host "`nNext Steps:" -ForegroundColor Yellow

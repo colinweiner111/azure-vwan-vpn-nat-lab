@@ -43,6 +43,28 @@ param hub1NatExternalRange string = '203.0.113.0/24'
 @description('Public IP range for Hub2 branch NAT (RFC 5737 TEST-NET-2)')
 param hub2NatExternalRange string = '198.51.100.0/24'
 
+@description('NAT rule type — Static (1:1 same-size prefix mapping) or Dynamic (many-to-few with port translation)')
+@allowed(['Static', 'Dynamic'])
+param natType string = 'Static'
+
+@description('Use APIPA (169.254.x.x) addresses for BGP peering over VPN tunnels')
+param useApipaBgp bool = true
+
+@description('Branch APIPA BGP address')
+param branchApipaBgpIp string = '169.254.21.2'
+
+@description('Hub1 Instance0 APIPA BGP address')
+param hub1ApipaInstance0 string = '169.254.21.1'
+
+@description('Hub1 Instance1 APIPA BGP address')
+param hub1ApipaInstance1 string = '169.254.22.1'
+
+@description('Hub2 Instance0 APIPA BGP address')
+param hub2ApipaInstance0 string = '169.254.21.5'
+
+@description('Hub2 Instance1 APIPA BGP address')
+param hub2ApipaInstance1 string = '169.254.22.5'
+
 // Resource Group
 resource rg 'Microsoft.Resources/resourceGroups@2023-07-01' = {
   name: resourceGroupName
@@ -93,6 +115,13 @@ module vpn 'modules/vpn.bicep' = {
     branchInternalRange: branchInternalRange
     hub1NatExternalRange: hub1NatExternalRange
     hub2NatExternalRange: hub2NatExternalRange
+    natType: natType
+    useApipaBgp: useApipaBgp
+    branchApipaBgpIp: branchApipaBgpIp
+    hub1ApipaInstance0: hub1ApipaInstance0
+    hub1ApipaInstance1: hub1ApipaInstance1
+    hub2ApipaInstance0: hub2ApipaInstance0
+    hub2ApipaInstance1: hub2ApipaInstance1
   }
   dependsOn: [
     network
@@ -135,3 +164,5 @@ output hub2Id string = network.outputs.hub2Id
 output bastionName string = bastion.outputs.bastionName
 output hub1NatRange string = hub1NatExternalRange
 output hub2NatRange string = hub2NatExternalRange
+output natType string = natType
+output apipaBgpEnabled bool = useApipaBgp
