@@ -75,7 +75,7 @@ resource hub1VpnGw 'Microsoft.Network/vpnGateways@2023-11-01' = {
     bgpSettings: {
       asn: 65515
     }
-    enableBgpRouteTranslation: true
+    enableBgpRouteTranslationForNat: true
   }
 }
 
@@ -89,7 +89,7 @@ resource hub2VpnGw 'Microsoft.Network/vpnGateways@2023-11-01' = {
     bgpSettings: {
       asn: 65515
     }
-    enableBgpRouteTranslation: true
+    enableBgpRouteTranslationForNat: true
   }
 }
 
@@ -122,24 +122,7 @@ resource hub1IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
   }
 }
 
-resource hub1EgressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
-  parent: hub1VpnGw
-  name: 'EgressSnat-Branch1'
-  properties: {
-    type: 'Static'
-    mode: 'EgressSnat'
-    internalMappings: [
-      {
-        addressSpace: branchInternalRange
-      }
-    ]
-    externalMappings: [
-      {
-        addressSpace: hub1NatExternalRange
-      }
-    ]
-  }
-}
+
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  VPN NAT Rules — Hub2                                                      ║
@@ -167,24 +150,7 @@ resource hub2IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
   }
 }
 
-resource hub2EgressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
-  parent: hub2VpnGw
-  name: 'EgressSnat-Branch1'
-  properties: {
-    type: 'Static'
-    mode: 'EgressSnat'
-    internalMappings: [
-      {
-        addressSpace: branchInternalRange
-      }
-    ]
-    externalMappings: [
-      {
-        addressSpace: hub2NatExternalRange
-      }
-    ]
-  }
-}
+
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  VPN Site for Branch1                                                      ║
@@ -249,18 +215,12 @@ resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
               id: hub1IngressNat.id
             }
           ]
-          egressNatRules: [
-            {
-              id: hub1EgressNat.id
-            }
-          ]
         }
       }
     ]
   }
   dependsOn: [
     hub1IngressNat
-    hub1EgressNat
   ]
 }
 
@@ -286,18 +246,12 @@ resource hub2BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
               id: hub2IngressNat.id
             }
           ]
-          egressNatRules: [
-            {
-              id: hub2EgressNat.id
-            }
-          ]
         }
       }
     ]
   }
   dependsOn: [
     hub2IngressNat
-    hub2EgressNat
   ]
 }
 
@@ -429,6 +383,4 @@ output hub1VpnGwId string = hub1VpnGw.id
 output hub2VpnGwId string = hub2VpnGw.id
 output vpnSiteId string = vpnSite.id
 output hub1IngressNatId string = hub1IngressNat.id
-output hub1EgressNatId string = hub1EgressNat.id
 output hub2IngressNatId string = hub2IngressNat.id
-output hub2EgressNatId string = hub2EgressNat.id
