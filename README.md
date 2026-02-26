@@ -37,9 +37,8 @@ The lab uses [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) documenta
   │ vm       │     │   │  10.100.0.0/24      │       │  10.100.0.0/24      │          │
   │          │     │   │    → 203.0.113.0/24 │       │    → 198.51.100.0/24│          │
   └──────────┘     │   │                     │       │                     │          │
-                    │   │  EgressSnat:        │       │  EgressSnat:        │          │
-                    │   │  10.100.0.0/24      │       │  10.100.0.0/24      │          │
-                    │   │    → 203.0.113.0/24 │       │    → 198.51.100.0/24│          │
+                    │   │  (Static 1:1 NAT — │       │  (Static 1:1 NAT — │          │
+                    │   │   handles both dirs)│       │   handles both dirs)│          │
                     │   │                     │       │                     │          │
                     │   │  Azure Firewall     │       │  Azure Firewall     │          │
                     │   │  (Routing Intent)   │       │  (Routing Intent)   │          │
@@ -63,18 +62,20 @@ The lab uses [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) documenta
 
 ## How VPN NAT Works
 
-### NAT Rule Types
+### NAT Rule Type
 
-Each hub VPN gateway has two NAT rules per branch connection:
+Each hub VPN gateway has one **Static IngressSnat** rule per branch connection. Static IngressSnat automatically handles both directions — source NAT on ingress and reverse destination NAT on egress:
 
-| Rule | Direction | Effect |
+| Rule | Traffic Direction | Effect |
 |---|---|---|
-| **IngressSnat** | Branch → Hub | Source IP `10.100.0.x` translated to `203.0.113.x` (Hub1) |
-| **EgressSnat** | Hub → Branch | Destination IP `203.0.113.x` translated back to `10.100.0.x` |
+| **IngressSnat** | Branch → Hub | Source IP `10.100.0.x` translated to `203.0.113.x` (Hub1) / `198.51.100.x` (Hub2) |
+| *(reverse)* | Hub → Branch | Destination IP `203.0.113.x` / `198.51.100.x` translated back to `10.100.0.x` automatically |
+
+> **Note:** A separate EgressSnat rule is **not needed** for static NAT. Using both IngressSnat and EgressSnat with the same external mapping on the same connection will cause an overlapping address space error.
 
 ### BGP Route Translation
 
-The `enableBgpRouteTranslation` flag on the VPN gateway ensures that:
+The `enableBgpRouteTranslationForNat` flag on the VPN gateway ensures that:
 - Routes advertised **into** the hub from the branch are automatically translated (the hub learns `203.0.113.0/24` instead of `10.100.0.0/24`)
 - Spokes, other branches, and ExpressRoute connections all see the **post-NAT** prefix
 - The DefaultRouteTable shows `203.0.113.0/24` with next hop `VPN_S2S_Gateway`
@@ -88,7 +89,7 @@ The `enableBgpRouteTranslation` flag on the VPN gateway ensures that:
 | 3. Routed through Azure Firewall | `203.0.113.4` | `172.16.1.4` | Hub1 |
 | 4. Arrives at spoke1 VM | `203.0.113.4` | `172.16.1.4` | Spoke VNet |
 | 5. Spoke1 VM replies | `172.16.1.4` | `203.0.113.4` | Spoke VNet |
-| 6. Leaves Hub1 VPN GW (EgressSnat) | `172.16.1.4` | **`10.100.0.4`** | Hub1 |
+| 6. Leaves Hub1 VPN GW (reverse NAT) | `172.16.1.4` | **`10.100.0.4`** | Hub1 |
 | 7. Arrives at branch | `172.16.1.4` | `10.100.0.4` | Branch VNet |
 
 ---
@@ -147,7 +148,7 @@ Deployment takes approximately **60–90 minutes** (VPN gateways are the bottlen
 - **1 Branch VNet** with VPN Gateway (BGP ASN 65010)
 - **2 Hub VPN Gateways** with:
   - `enableBgpRouteTranslation: true`
-  - IngressSnat + EgressSnat NAT rules per branch connection
+  - Static IngressSnat NAT rules per branch connection
 - **2 Azure Firewalls** (Hub SKU) with Routing Intent (InternetAndPrivate)
 - **Azure Bastion** (Standard, IP-based connections)
 - **5 Ubuntu VMs** with traceroute pre-installed
@@ -165,61 +166,151 @@ Deployment takes approximately **60–90 minutes** (VPN gateways are the bottlen
 
 ---
 
-## Verifying NAT is Working
+## Testing & Verifying NAT
 
-### 1. Check Effective Routes (Azure Portal)
+### 1. Verify NAT Rules via CLI
 
-1. Navigate to **Virtual Hub → Effective Routes**
-2. You should see:
-   - `203.0.113.0/24` with Next Hop = `VPN_S2S_Gateway` (Hub1)
-   - `198.51.100.0/24` with Next Hop = `VPN_S2S_Gateway` (Hub2)
-   - **NOT** `10.100.0.0/24` — the pre-NAT range should not appear
+Confirm the NAT rules are deployed and are Static type:
 
-### 2. Check NAT Rules (Azure Portal)
+```powershell
+# Hub1 NAT rules
+az network vpn-gateway nat-rule list --gateway-name hub1-vpngw -g vwan-vpn-nat-lab -o table
 
-1. Navigate to **Virtual Hub → VPN (Site to site) → NAT rules (Edit)**
-2. You should see:
-   - `IngressSnat-Branch1`: Internal `10.100.0.0/24` → External `203.0.113.0/24`
-   - `EgressSnat-Branch1`: Internal `10.100.0.0/24` → External `203.0.113.0/24`
+# Hub2 NAT rules
+az network vpn-gateway nat-rule list --gateway-name hub2-vpngw -g vwan-vpn-nat-lab -o table
 
-### 3. Verify with tcpdump (Live Traffic)
+# Confirm Static type (look for '"type": "Static"')
+az network vpn-gateway nat-rule show --gateway-name hub1-vpngw -g vwan-vpn-nat-lab -n IngressSnat-Branch1 -o json | Select-String '"type"'
+```
+
+Expected output:
+
+| Name | Mode | Internal | External |
+|---|---|---|---|
+| IngressSnat-Branch1 | IngressSnat | 10.100.0.0/24 | 203.0.113.0/24 (Hub1) |
+| IngressSnat-Branch1 | IngressSnat | 10.100.0.0/24 | 198.51.100.0/24 (Hub2) |
+
+### 2. Verify NAT Rule Bound to VPN Connection
+
+```powershell
+az network vpn-gateway connection show \
+  --gateway-name hub1-vpngw -g vwan-vpn-nat-lab \
+  -n site-branch1-conn \
+  --query "{status:provisioningState, ingressNat:vpnLinkConnections[0].ingressNatRules}" \
+  -o json
+```
+
+You should see the `ingressNatRules` array referencing the `IngressSnat-Branch1` NAT rule, and no `egressNatRules`.
+
+### 3. Check Effective Routes — Azure Firewall (Best View)
+
+This is the **best visual proof** of NAT working. In the Azure Portal:
+
+1. Navigate to **Virtual WAN → Hubs → hub1 (or hub2) → Effective Routes**
+2. Set **Choose resource type** = `Azure Firewall`
+3. Set **Resource** = `hub1-azfw` or `hub2-azfw`
+
+What to look for on **hub2-azfw**:
+
+| Prefix | Next Hop Type | Next Hop | Meaning |
+|---|---|---|---|
+| **198.51.100.0/24** | VPN_S2S_Gateway | hub2-vpngw | Hub2's own NAT'd branch range |
+| **203.0.113.0/24** | Remote Hub | hub1 | Hub1's NAT'd branch, learned via inter-hub |
+| 172.16.3.0/24 | Virtual Network Connection | hub2-spoke1-conn | Hub2's local spoke |
+| 172.16.1.0/24 | Remote Hub | hub1 | Hub1's spoke, learned via inter-hub |
+
+> **Key insight:** The firewall sees the **translated** public ranges (`203.0.113.0/24`, `198.51.100.0/24`), proving NAT occurs at the VPN gateway before traffic reaches the firewall.
+
+### 4. Check Effective Routes — Spoke VM NIC
+
+```powershell
+az network nic show-effective-route-table -g vwan-vpn-nat-lab -n hub1-spoke1-vm-nic -o table
+```
+
+With Routing Intent enabled, you'll see broad aggregates (`0.0.0.0/0`, `10.0.0.0/8`, `172.16.0.0/12`) pointing to the Azure Firewall. The specific NAT'd prefix isn't visible here — it's abstracted behind the firewall. This is **expected behavior** with Routing Intent.
+
+### 5. Live Traffic Test — tcpdump (The Money Shot)
+
+This proves end-to-end NAT translation with actual packets.
+
+**Terminal 1:** Connect to `hub1-spoke1-vm` via Bastion, start capture:
 
 ```bash
-# Step 1: SSH to hub1-spoke1-vm via Bastion (IP: 172.16.1.4)
-# Start packet capture
 sudo tcpdump -i eth0 icmp -n
-
-# Step 2: In a separate Bastion session, SSH to branch1-vm (IP: 10.100.0.4)
-# Ping the spoke
-ping 172.16.1.4
-
-# Step 3: On the spoke's tcpdump output, you should see:
-#   203.0.113.4 > 172.16.1.4: ICMP echo request
-#   172.16.1.4 > 203.0.113.4: ICMP echo reply
-#
-# The source is 203.0.113.4 (NATted), NOT 10.100.0.4 (original)
 ```
 
-### 4. Check VM's Effective Routes
+**Terminal 2:** Connect to `branch1-vm` via Bastion, ping the spoke:
 
 ```bash
-# On hub1-spoke1-vm:
-# In Azure Portal → VM → Networking → Effective Routes
-# You should see a route for 203.0.113.0/24 (not 10.100.0.0/24)
+ping 172.16.1.4
 ```
 
-### 5. Check Azure Firewall Logs
+**What you see on spoke1's tcpdump:**
+
+```
+203.0.113.4 > 172.16.1.4: ICMP echo request
+172.16.1.4 > 203.0.113.4: ICMP echo reply
+```
+
+The source is **`203.0.113.4`** (NAT'd), NOT `10.100.0.4` (branch real IP). This is the definitive proof.
+
+> **Note:** The VPN tunnels must be in **Connected** state for this test. Since the lab uses a simulated branch (VNet + VPN Gateway), tunnels auto-negotiate after deployment. Allow a few minutes after deployment completes.
+
+### 6. Verify VPN Tunnel Status
+
+```powershell
+# Check branch-side connections
+az network vpn-connection list -g vwan-vpn-nat-lab \
+  --query "[].{name:name, status:connectionStatus}" -o table
+```
+
+### 7. Azure Firewall Logs (KQL)
+
+After generating traffic (ping test above), query Log Analytics to see the firewall processing NAT'd traffic:
 
 ```kql
-// In Log Analytics, query the firewall network rule log
+// Resource-specific table (if enabled)
+AZFWNetworkRule
+| where TimeGenerated > ago(30m)
+| where SourceIp startswith "203.0.113" or SourceIp startswith "198.51.100"
+| project TimeGenerated, SourceIp, DestinationIp, DestinationPort, Protocol, Action
+| order by TimeGenerated desc
+```
+
+```kql
+// Legacy diagnostics table (fallback)
 AzureDiagnostics
 | where Category == "AzureFirewallNetworkRule"
-| where msg_s contains "203.0.113"
+| where msg_s contains "203.0.113" or msg_s contains "198.51.100"
 | project TimeGenerated, msg_s
 | order by TimeGenerated desc
 ```
 
-The firewall logs will show the NATted source IP (`203.0.113.x`), confirming NAT occurs before firewall inspection.
+The firewall logs show the **NAT'd source IP** (`203.0.113.x`), confirming translation happens at the VPN gateway **before** the firewall inspects the traffic.
+
+### 8. Verify BGP Route Translation
+
+Check that the VPN gateway advertises the NAT'd prefix, not the original:
+
+```powershell
+# Show VPN gateway BGP settings
+az network vpn-gateway show -g vwan-vpn-nat-lab -n hub1-vpngw \
+  --query "{bgpEnabled:bgpSettings.asn, natTranslation:enableBgpRouteTranslationForNat}" -o json
+```
+
+`enableBgpRouteTranslationForNat` should be `true`, meaning:
+- Hub1 advertises `203.0.113.0/24` (not `10.100.0.0/24`) to spokes and other hubs
+- Hub2 advertises `198.51.100.0/24` (not `10.100.0.0/24`) to spokes and other hubs
+
+### Quick Summary: What to Show a Customer
+
+| Demo Step | What It Proves | Effort |
+|---|---|---|
+| Firewall Effective Routes (Portal) | NAT'd public ranges in routing table | 30 seconds |
+| NAT Rules via CLI | Static 1:1 mapping configuration | 30 seconds |
+| tcpdump on spoke VM | Actual packets show translated source IP | 2 minutes |
+| Firewall KQL logs | Firewall sees NAT'd IPs, not original | 1 minute |
+| BGP translation flag | Routes advertised post-NAT automatically | 30 seconds |
 
 ---
 
@@ -240,7 +331,7 @@ resource hub1IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
   }
 }
 
-// NAT rules referenced on the VPN connection's link
+// NAT rule referenced on the VPN connection's link (IngressSnat only — handles both directions)
 resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01' = {
   parent: hub1VpnGw
   name: 'site-branch1-conn'
@@ -248,7 +339,6 @@ resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
     vpnLinkConnections: [{
       properties: {
         ingressNatRules: [{ id: hub1IngressNat.id }]
-        egressNatRules:  [{ id: hub1EgressNat.id }]
       }
     }]
   }
