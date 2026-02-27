@@ -30,6 +30,14 @@ Each branch IP maps 1:1 to a public TEST-NET IP. Both sides can initiate traffic
 
 ![Azure vWAN VPN NAT Architecture — Static NAT (1:1 mapping)](image/vwan-nat-diagram-static.svg)
 
+| Aspect | Details |
+|--------|---------|
+| Mapping | 1:1 address (`10.100.0.4` ↔ `203.0.113.4`) |
+| External range | Must match internal size (`/24` → `/24`) |
+| Initiation | Both sides can initiate |
+| Deploy example | `-Hub1NatExternalRange "203.0.113.0/24"` |
+| Use case | Full bidirectional access, PoC/demo |
+
 ---
 
 ## Dynamic NAT
@@ -40,13 +48,13 @@ Many branch IPs share a single external IP using port translation (PAT). Only th
 
 With Dynamic NAT (`natType=Dynamic`), the VPN gateway uses **port address translation (PAT)** to map many branch IPs to a single (or few) external IPs. The external range can be as small as a `/32`.
 
-| Aspect | Static NAT (default) | Dynamic NAT |
-|--------|-----------|-------------|
-| Mapping | 1:1 address (`10.100.0.4` ↔ `203.0.113.4`) | Many-to-one with PAT (`10.100.0.*` → `203.0.113.1:port`) |
-| External range | Must match internal size (`/24` → `/24`) | Can be smaller (`/24` → `/32`) |
-| Initiation | Both sides can initiate | Only the NAT'd side (branch) can initiate |
-| Deploy example | `-Hub1NatExternalRange "203.0.113.0/24"` | `-Hub1NatExternalRange "203.0.113.1/32"` |
-| Use case | Full bidirectional access, PoC/demo | Production overlapping branches, cost-conscious |
+| Aspect | Details |
+|--------|---------|
+| Mapping | Many-to-one with PAT (`10.100.0.*` → `203.0.113.1:port`) |
+| External range | Can be smaller (`/24` → `/32`) |
+| Initiation | Only the NAT'd side (branch) can initiate |
+| Deploy example | `-Hub1NatExternalRange "203.0.113.1/32"` |
+| Use case | Production overlapping branches, cost-conscious |
 
 ---
 
