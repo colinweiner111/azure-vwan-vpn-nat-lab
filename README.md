@@ -17,34 +17,29 @@ This lab deploys an end-to-end **Azure Virtual WAN** environment with **VPN Site
 
 > Based on [azure-vwan-secure-hub-lab](https://github.com/colinweiner111/azure-vwan-secure-hub-lab), extended with VPN S2S NAT rules.
 
+<br>
+
 ---
 
-## Architecture — Static NAT (default)
+# Architecture
+
+## Static NAT (default)
 
 Each branch IP maps 1:1 to a public TEST-NET IP. Both sides can initiate traffic.
 
 ![Azure vWAN VPN NAT Architecture — Static NAT (1:1 mapping)](image/vwan-nat-diagram.svg)
 
-```
-Branch VNet                    vWAN Hub1                      Hub1 Spokes
-10.100.0.0/24                  (Secured Hub)                  172.16.1.0/27, 172.16.2.0/27
-      │                              │                              │
-      │  S2S VPN + NAT               │                              │
-      ├──────────────────────────────►│                              │
-      │  10.100.0.x ──► 203.0.113.x  │  ────────────────────────►   │
-      │  (IngressSnat)               │  Firewall sees 203.0.113.x  │
-      │                              │                              │
-      │  S2S VPN + NAT        vWAN Hub2                      Hub2 Spokes
-      ├──────────────────────────────►│                        172.16.3.0/27, 172.16.4.0/27
-      │  10.100.0.x ──► 198.51.100.x │  ────────────────────────►   │
-      │  (IngressSnat)               │  Firewall sees 198.51.100.x │
-```
+---
 
-## Architecture — Dynamic NAT
+## Dynamic NAT
 
 Many branch IPs share a single external IP using port translation (PAT). Only the branch side can initiate.
 
-> **Diagram coming soon**
+> **Dynamic NAT diagram placeholder** — *add `image/vwan-nat-dynamic-diagram.svg` to replace*
+
+![Azure vWAN VPN NAT Architecture — Dynamic NAT (PAT)](image/vwan-nat-dynamic-diagram.svg)
+
+With Dynamic NAT (`natType=Dynamic`), the VPN gateway uses **port address translation (PAT)** to map many branch IPs to a single (or few) external IPs. The external range can be as small as a `/32`.
 
 | Aspect | Static NAT (default) | Dynamic NAT |
 |--------|-----------|-------------|
