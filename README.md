@@ -25,6 +25,8 @@ This lab deploys an end-to-end **Azure Virtual WAN** environment with **VPN Site
 
 ## Static NAT (default)
 
+> Static NAT is the default when deploying with `natType=Static` (or omitting the parameter entirely).
+
 Each branch IP maps 1:1 to a public TEST-NET IP. Both sides can initiate traffic.
 
 ![Azure vWAN VPN NAT Architecture — Static NAT (1:1 mapping)](image/vwan-nat-diagram-static.svg)
