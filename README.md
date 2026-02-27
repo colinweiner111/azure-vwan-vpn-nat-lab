@@ -25,38 +25,9 @@ The lab uses [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) documenta
 
 ## Architecture
 
-```
-                    ┌──────────────────────────────────────────────────────────────────┐
-                    │                       Azure Virtual WAN                          │
-                    │                                                                  │
-  ┌──────────┐     │   ┌─────────────────────┐       ┌─────────────────────┐          │
-  │ Branch 1 │     │   │       Hub 1          │       │       Hub 2          │          │
-  │10.100.0/24│────┼──▶│  VPN GW + NAT Rules  │       │  VPN GW + NAT Rules  │          │
-  │          │     │   │                     │       │                     │          │
-  │ branch1- │     │   │  IngressSnat:       │       │  IngressSnat:       │          │
-  │ vm       │     │   │  10.100.0.0/24      │       │  10.100.0.0/24      │          │
-  │          │     │   │    → 203.0.113.0/24 │       │    → 198.51.100.0/24│          │
-  └──────────┘     │   │                     │       │                     │          │
-                    │   │  (Static 1:1 NAT — │       │  (Static 1:1 NAT — │          │
-                    │   │   handles both dirs)│       │   handles both dirs)│          │
-                    │   │                     │       │                     │          │
-                    │   │  Azure Firewall     │       │  Azure Firewall     │          │
-                    │   │  (Routing Intent)   │       │  (Routing Intent)   │          │
-                    │   └────┬──────────┬─────┘       └────┬──────────┬─────┘          │
-                    │        │          │                   │          │                │
-                    │   ┌────┴───┐ ┌────┴───┐         ┌────┴───┐ ┌────┴───┐           │
-                    │   │Spoke 1 │ │Spoke 2 │         │Spoke 1 │ │Spoke 2 │           │
-                    │   │172.16  │ │172.16  │         │172.16  │ │172.16  │           │
-                    │   │.1.0/24 │ │.2.0/24 │         │.3.0/24 │ │.4.0/24 │           │
-                    │   └────────┘ └────────┘         └────────┘ └────────┘           │
-                    └──────────────────────────────────────────────────────────────────┘
+![Azure vWAN VPN NAT Architecture](image/vwan-nat-diagram.svg)
 
-  NAT Effect:
-  ───────────
-  When hub1-spoke1-vm runs tcpdump, traffic FROM branch1-vm appears as 203.0.113.x
-  When hub2-spoke1-vm runs tcpdump, traffic FROM branch1-vm appears as 198.51.100.x
-  The branch VM's actual IP (10.100.0.x) is never seen by spoke VMs.
-```
+> **NAT Effect:** When hub1-spoke1-vm runs tcpdump, traffic FROM branch1-vm appears as `203.0.113.x`. When hub2-spoke1-vm runs tcpdump, it appears as `198.51.100.x`. The branch VM's actual IP (`10.100.0.x`) is never seen by spoke VMs.
 
 ---
 
@@ -128,12 +99,19 @@ The `enableBgpRouteTranslationForNat` flag on the VPN gateway ensures that:
 
 ## Deployment
 
+The deploy script uses a **two-phase approach**:
+
+1. **Phase 1 (Bicep):** Deploys all infrastructure — vWAN, hubs, gateways, NAT rules, VPN connections, firewalls, VMs, and Bastion. Hub VPN connections are created *without* APIPA custom BGP addresses.
+2. **Phase 2 (REST API, only when `UseApipaBgp=$true`):** Sets APIPA `customBgpIpAddresses` on the hub VPN gateways via REST PUT, then updates the hub connections with `vpnGatewayCustomBgpAddresses`.
+
+> **Why two phases?** vWAN VPN gateways (`Microsoft.Network/vpnGateways`) silently ignore `customBgpIpAddresses` in `bgpSettings` during initial ARM/Bicep creation. The addresses can only be set via REST API PUT on an already-provisioned gateway. This is a platform limitation.
+
 ```powershell
 # Clone and deploy
 git clone <repo-url>
 cd azure-vwan-vpn-nat-lab
 
-# Deploy with defaults (203.0.113.0/24 for Hub1, 198.51.100.0/24 for Hub2)
+# Deploy with defaults (APIPA BGP + Static NAT)
 .\deploy-bicep.ps1 -ResourceGroupName vwan-vpn-nat-lab -Location westus3
 
 # Or customize the NAT ranges
@@ -153,11 +131,11 @@ cd azure-vwan-vpn-nat-lab
     -Hub1NatExternalRange "203.0.113.1/32" `
     -Hub2NatExternalRange "198.51.100.1/32"
 
-# Deploy without APIPA BGP (use default hub BGP IPs instead)
+# Deploy without APIPA BGP (Phase 2 is skipped — single-phase Bicep only)
 .\deploy-bicep.ps1 -UseApipaBgp $false
 ```
 
-Deployment takes approximately **60–90 minutes** (VPN gateways are the bottleneck).
+Deployment takes approximately **60–90 minutes** for Phase 1 (VPN gateways are the bottleneck), plus **~10 minutes** for Phase 2 APIPA configuration.
 
 ### Parameters
 
@@ -360,14 +338,15 @@ resource hub1IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
   parent: hub1VpnGw
   name: 'IngressSnat-Branch1'
   properties: {
-    type: 'Static'
+    type: natType       // 'Static' or 'Dynamic'
     mode: 'IngressSnat'
     internalMappings: [{ addressSpace: '10.100.0.0/24' }]    // Pre-NAT (branch actual)
     externalMappings: [{ addressSpace: '203.0.113.0/24' }]    // Post-NAT (public range)
   }
 }
 
-// NAT rule referenced on the VPN connection's link (IngressSnat only — handles both directions)
+// Hub connections are created WITHOUT vpnGatewayCustomBgpAddresses in Bicep.
+// The deploy script adds APIPA addresses via REST API in Phase 2.
 resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01' = {
   parent: hub1VpnGw
   name: 'site-branch1-conn'
@@ -375,11 +354,22 @@ resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
     vpnLinkConnections: [{
       properties: {
         ingressNatRules: [{ id: hub1IngressNat.id }]
+        // vpnGatewayCustomBgpAddresses added by deploy script Phase 2
       }
     }]
   }
 }
 ```
+
+### Two-Phase APIPA Architecture Note
+
+vWAN VPN gateways ignore `customBgpIpAddresses` during initial ARM creation. The deploy script handles this with a proven workaround:
+
+1. **Bicep (Phase 1):** Creates gateways, NAT rules, connections — all without APIPA on hub side
+2. **REST PUT (Phase 2a):** Sets `customBgpIpAddresses` on each hub VPN gateway's `bgpSettings.bgpPeeringAddresses`
+3. **REST PUT (Phase 2b):** Updates hub connections with `vpnGatewayCustomBgpAddresses` referencing the now-present APIPA addresses
+
+Branch-side APIPA (traditional `Microsoft.Network/virtualNetworkGateways`) works fine in Bicep — no workaround needed.
 
 ---
 
