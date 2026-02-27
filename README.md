@@ -1,20 +1,52 @@
-# Azure vWAN VPN NAT Lab — Public IP Range Translation
+# Azure Virtual WAN — VPN NAT Lab
 
-> Based on [azure-vwan-secure-hub-lab](https://github.com/colinweiner111/azure-vwan-secure-hub-lab), extended with **VPN S2S NAT rules** that translate branch private address space to public IP ranges.
+![Azure vWAN VPN NAT Architecture](image/vwan-nat-diagram.svg)
 
-This lab demonstrates **VPN NAT (Static or Dynamic) on Azure Virtual WAN VPN Gateways** using public (non-RFC 1918) IP ranges as the external/translated address space, with optional **APIPA BGP peering** (169.254.x.x). It follows the patterns described in [Configure NAT rules for your Virtual WAN VPN gateway](https://learn.microsoft.com/en-us/azure/virtual-wan/nat-rules-vpn-gateway).
+## TL;DR
+
+This lab deploys an end-to-end **Azure Virtual WAN** environment with **VPN Site-to-Site NAT** that translates branch private address space (`10.100.0.0/24`) to public [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) TEST-NET ranges — so you can **see NAT working** in route tables, tcpdump, and firewall logs without any ambiguity.
+
+```
+Branch VNet                    vWAN Hub1                      Hub1 Spokes
+10.100.0.0/24                  (Secured Hub)                  172.16.1.0/27, 172.16.2.0/27
+      │                              │                              │
+      │  S2S VPN + NAT               │                              │
+      ├──────────────────────────────►│                              │
+      │  10.100.0.x ──► 203.0.113.x  │  ────────────────────────►   │
+      │  (IngressSnat)               │  Firewall sees 203.0.113.x  │
+      │                              │                              │
+      │  S2S VPN + NAT        vWAN Hub2                      Hub2 Spokes
+      ├──────────────────────────────►│                        172.16.3.0/27, 172.16.4.0/27
+      │  10.100.0.x ──► 198.51.100.x │  ────────────────────────►   │
+      │  (IngressSnat)               │  Firewall sees 198.51.100.x │
+```
+
+**What makes this different:** Most VPN NAT demos translate one RFC 1918 range to another (`10.x` → `172.x`), making it hard to tell if NAT is actually working. This lab uses reserved **public IP ranges** as the NAT target — when you see `203.0.113.x` in a route table or packet capture, you *know* that's a NAT'd address.
+
+| Feature | Details |
+|---------|---------|
+| **NAT type** | Static (1:1) or Dynamic (PAT) — configurable |
+| **Hub1 NAT range** | `203.0.113.0/24` (TEST-NET-3) |
+| **Hub2 NAT range** | `198.51.100.0/24` (TEST-NET-2) |
+| **BGP** | Optional APIPA peering (169.254.x.x) via two-phase deploy |
+| **Security** | Azure Firewall Premium + Routing Intent on both hubs |
+| **Docs** | [Configure NAT rules for your Virtual WAN VPN gateway](https://learn.microsoft.com/en-us/azure/virtual-wan/nat-rules-vpn-gateway) |
+
+> Based on [azure-vwan-secure-hub-lab](https://github.com/colinweiner111/azure-vwan-secure-hub-lab), extended with VPN S2S NAT rules.
 
 ---
 
-## Why NAT with Public IP Ranges?
+## Why Public IP Ranges for NAT?
 
 Typical VPN NAT demos translate one private range to another (e.g., `10.x` → `172.x`). This lab uses **public IP ranges** as the NAT external mapping to demonstrate scenarios such as:
 
-- **Compliance boundaries** — branch traffic entering the vWAN fabric appears as a public range, creating a clear trust boundary between on-premises and cloud
+- **Routing clarity** — when checking effective routes or firewall logs, NAT'd traffic from branches is immediately distinguishable from spoke-to-spoke or spoke-to-internet flows
 - **Multi-tenant isolation** — different branches (even with overlapping private space) can each be mapped to unique, easily identifiable public ranges
-- **Routing clarity** — when checking effective routes or firewall logs, NATted traffic from branches is immediately distinguishable from spoke-to-spoke or spoke-to-internet flows
+- **Compliance boundaries** — branch traffic entering the vWAN fabric appears as a public range, creating a clear trust boundary between on-premises and cloud
 
-The lab uses **RFC 5737 "TEST-NET" ranges** — three /24 blocks that IANA has permanently reserved for use in documentation, examples, and testing. They are **not routable on the public internet**, will never be assigned to any organization, and are safe to use in any lab or demo environment without risk of conflict.
+### RFC 5737 TEST-NET Ranges
+
+The lab uses three /24 blocks that IANA has permanently reserved for documentation — they are **not routable on the public internet** and will never be assigned to any organization:
 
 | Range | RFC Name | Used In This Lab | IANA Purpose |
 |---|---|---|---|
@@ -22,31 +54,18 @@ The lab uses **RFC 5737 "TEST-NET" ranges** — three /24 blocks that IANA has p
 | `198.51.100.0/24` | TEST-NET-2 | Hub2 NAT external mapping | Documentation & examples |
 | `192.0.2.0/24` | TEST-NET-1 | *(not used — available for expansion)* | Documentation & examples |
 
-### Official References for These Ranges
-
-- **RFC 5737** (IETF) — [IPv4 Address Blocks Reserved for Documentation](https://datatracker.ietf.org/doc/html/rfc5737) — The authoritative standard defining these three /24 blocks
-- **IANA IPv4 Special-Purpose Address Registry** — [IANA Special-Purpose Addresses](https://www.iana.org/assignments/iana-ipv4-special-purpose-registry/iana-ipv4-special-purpose-registry.xhtml) — Master list of all reserved IPv4 ranges including TEST-NETs
-- **ARIN Whois** — Query [203.0.113.0](https://search.arin.net/rdap/?query=203.0.113.0) or [198.51.100.0](https://search.arin.net/rdap/?query=198.51.100.0) — Shows these blocks are administered by IANA as "SPECIAL-PURPOSE" and not delegated to any ISP or organization
-
-> **Why not RFC 1918 private ranges?** Using `10.x`, `172.16.x`, or `192.168.x` as NAT targets would blend in with existing private address space and make it hard to visually confirm NAT is working. The TEST-NET public ranges are immediately recognizable in route tables, tcpdump output, and firewall logs — making them ideal for demonstrating NAT translation.
+**Official references:**
+- [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) (IETF) — The authoritative standard defining these three /24 blocks
+- [IANA IPv4 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv4-special-purpose-registry/iana-ipv4-special-purpose-registry.xhtml) — Master list of all reserved IPv4 ranges
+- ARIN Whois — [203.0.113.0](https://search.arin.net/rdap/?query=203.0.113.0) / [198.51.100.0](https://search.arin.net/rdap/?query=198.51.100.0) — Shows these as IANA "SPECIAL-PURPOSE"
 
 ---
 
-## Architecture (Static NAT)
+## Static NAT vs Dynamic NAT
 
-The diagram below shows the **Static NAT** configuration (default, `natType=Static`), where each branch IP maps 1:1 to a public TEST-NET IP.
+This lab supports both modes via the `natType` parameter:
 
-![Azure vWAN VPN NAT Architecture — Static NAT](image/vwan-nat-diagram.svg)
-
-> **NAT Effect (Static):** When hub1-spoke1-vm runs tcpdump, traffic FROM branch1-vm appears as `203.0.113.x`. When hub2-spoke1-vm runs tcpdump, it appears as `198.51.100.x`. The branch VM's actual IP (`10.100.0.x`) is never seen by spoke VMs. Both directions can initiate — spoke VMs can reach `203.0.113.4` to talk to the branch.
-
-### Architecture (Dynamic NAT)
-
-> **Placeholder** — Dynamic NAT diagram coming soon.
-
-With **Dynamic NAT** (`natType=Dynamic`), the external mapping can be a smaller prefix (e.g., `/32`) because port address translation (PAT) is used:
-
-| Aspect | Static NAT | Dynamic NAT |
+| Aspect | Static NAT (default) | Dynamic NAT |
 |--------|-----------|-------------|
 | Mapping | 1:1 address (`10.100.0.4` ↔ `203.0.113.4`) | Many-to-one with PAT (`10.100.0.*` → `203.0.113.1:port`) |
 | External range | Must match internal size (`/24` → `/24`) | Can be smaller (`/24` → `/32`) |
@@ -54,20 +73,15 @@ With **Dynamic NAT** (`natType=Dynamic`), the external mapping can be a smaller 
 | Deploy example | `-Hub1NatExternalRange "203.0.113.0/24"` | `-Hub1NatExternalRange "203.0.113.1/32"` |
 | Use case | Full bidirectional access, PoC/demo | Production overlapping branches, cost-conscious |
 
+> **Dynamic NAT diagram** — coming soon.
+
 ---
 
 ## How VPN NAT Works
 
-### NAT Rule Type (Static vs Dynamic)
+Each hub VPN gateway has one **IngressSnat** rule per branch connection.
 
-Each hub VPN gateway has one **IngressSnat** rule per branch connection. The type is configurable:
-
-| Type | Mapping | Who Can Initiate | External Prefix |
-|------|---------|------------------|-----------------|
-| **Static** | 1:1, same-size prefixes | Both sides | Must match internal size (/24→/24) |
-| **Dynamic** | Many-to-few with PAT | Only NAT’d side (branch) | Can be smaller (/24→/32) |
-
-#### Static NAT Flow
+### Static NAT Flow
 
 Static IngressSnat automatically handles both directions — source NAT on ingress and reverse destination NAT on egress:
 
