@@ -9,8 +9,7 @@ This lab deploys an end-to-end **Azure Virtual WAN** environment with **VPN Site
 | Feature | Details |
 |---------|---------|
 | **NAT type** | Static (1:1) or Dynamic (PAT) — configurable |
-| **Hub1 NAT range** | `203.0.113.0/24` (TEST-NET-3) |
-| **Hub2 NAT range** | `198.51.100.0/24` (TEST-NET-2) |
+| **NAT target** | RFC 5737 public TEST-NET ranges (not private) |
 | **BGP** | Optional APIPA peering (169.254.x.x) via two-phase deploy |
 | **Security** | Azure Firewall Premium + Routing Intent on both hubs |
 | **Docs** | [Configure NAT rules for your Virtual WAN VPN gateway](https://learn.microsoft.com/en-us/azure/virtual-wan/nat-rules-vpn-gateway) |
