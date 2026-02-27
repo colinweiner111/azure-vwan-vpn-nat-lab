@@ -1,10 +1,29 @@
 # Azure Virtual WAN — VPN NAT Lab
 
-![Azure vWAN VPN NAT Architecture](image/vwan-nat-diagram.svg)
-
 ## TL;DR
 
 This lab deploys an end-to-end **Azure Virtual WAN** environment with **VPN Site-to-Site NAT** that translates branch private address space (`10.100.0.0/24`) to public [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) TEST-NET ranges — so you can **see NAT working** in route tables, tcpdump, and firewall logs without any ambiguity.
+
+**What makes this different:** Most VPN NAT demos translate one RFC 1918 range to another (`10.x` → `172.x`), making it hard to tell if NAT is actually working. This lab uses reserved **public IP ranges** as the NAT target — when you see `203.0.113.x` in a route table or packet capture, you *know* that's a NAT'd address.
+
+| Feature | Details |
+|---------|---------|
+| **NAT type** | Static (1:1) or Dynamic (PAT) — configurable |
+| **Hub1 NAT range** | `203.0.113.0/24` (TEST-NET-3) |
+| **Hub2 NAT range** | `198.51.100.0/24` (TEST-NET-2) |
+| **BGP** | Optional APIPA peering (169.254.x.x) via two-phase deploy |
+| **Security** | Azure Firewall Premium + Routing Intent on both hubs |
+| **Docs** | [Configure NAT rules for your Virtual WAN VPN gateway](https://learn.microsoft.com/en-us/azure/virtual-wan/nat-rules-vpn-gateway) |
+
+> Based on [azure-vwan-secure-hub-lab](https://github.com/colinweiner111/azure-vwan-secure-hub-lab), extended with VPN S2S NAT rules.
+
+---
+
+## Architecture — Static NAT (default)
+
+Each branch IP maps 1:1 to a public TEST-NET IP. Both sides can initiate traffic.
+
+![Azure vWAN VPN NAT Architecture — Static NAT (1:1 mapping)](image/vwan-nat-diagram.svg)
 
 ```
 Branch VNet                    vWAN Hub1                      Hub1 Spokes
@@ -21,18 +40,19 @@ Branch VNet                    vWAN Hub1                      Hub1 Spokes
       │  (IngressSnat)               │  Firewall sees 198.51.100.x │
 ```
 
-**What makes this different:** Most VPN NAT demos translate one RFC 1918 range to another (`10.x` → `172.x`), making it hard to tell if NAT is actually working. This lab uses reserved **public IP ranges** as the NAT target — when you see `203.0.113.x` in a route table or packet capture, you *know* that's a NAT'd address.
+## Architecture — Dynamic NAT
 
-| Feature | Details |
-|---------|---------|
-| **NAT type** | Static (1:1) or Dynamic (PAT) — configurable |
-| **Hub1 NAT range** | `203.0.113.0/24` (TEST-NET-3) |
-| **Hub2 NAT range** | `198.51.100.0/24` (TEST-NET-2) |
-| **BGP** | Optional APIPA peering (169.254.x.x) via two-phase deploy |
-| **Security** | Azure Firewall Premium + Routing Intent on both hubs |
-| **Docs** | [Configure NAT rules for your Virtual WAN VPN gateway](https://learn.microsoft.com/en-us/azure/virtual-wan/nat-rules-vpn-gateway) |
+Many branch IPs share a single external IP using port translation (PAT). Only the branch side can initiate.
 
-> Based on [azure-vwan-secure-hub-lab](https://github.com/colinweiner111/azure-vwan-secure-hub-lab), extended with VPN S2S NAT rules.
+> **Diagram coming soon**
+
+| Aspect | Static NAT (default) | Dynamic NAT |
+|--------|-----------|-------------|
+| Mapping | 1:1 address (`10.100.0.4` ↔ `203.0.113.4`) | Many-to-one with PAT (`10.100.0.*` → `203.0.113.1:port`) |
+| External range | Must match internal size (`/24` → `/24`) | Can be smaller (`/24` → `/32`) |
+| Initiation | Both sides can initiate | Only the NAT'd side (branch) can initiate |
+| Deploy example | `-Hub1NatExternalRange "203.0.113.0/24"` | `-Hub1NatExternalRange "203.0.113.1/32"` |
+| Use case | Full bidirectional access, PoC/demo | Production overlapping branches, cost-conscious |
 
 ---
 
@@ -58,22 +78,6 @@ The lab uses three /24 blocks that IANA has permanently reserved for documentati
 - [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) (IETF) — The authoritative standard defining these three /24 blocks
 - [IANA IPv4 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv4-special-purpose-registry/iana-ipv4-special-purpose-registry.xhtml) — Master list of all reserved IPv4 ranges
 - ARIN Whois — [203.0.113.0](https://search.arin.net/rdap/?query=203.0.113.0) / [198.51.100.0](https://search.arin.net/rdap/?query=198.51.100.0) — Shows these as IANA "SPECIAL-PURPOSE"
-
----
-
-## Static NAT vs Dynamic NAT
-
-This lab supports both modes via the `natType` parameter:
-
-| Aspect | Static NAT (default) | Dynamic NAT |
-|--------|-----------|-------------|
-| Mapping | 1:1 address (`10.100.0.4` ↔ `203.0.113.4`) | Many-to-one with PAT (`10.100.0.*` → `203.0.113.1:port`) |
-| External range | Must match internal size (`/24` → `/24`) | Can be smaller (`/24` → `/32`) |
-| Initiation | Both sides can initiate | Only the NAT'd side (branch) can initiate |
-| Deploy example | `-Hub1NatExternalRange "203.0.113.0/24"` | `-Hub1NatExternalRange "203.0.113.1/32"` |
-| Use case | Full bidirectional access, PoC/demo | Production overlapping branches, cost-conscious |
-
-> **Dynamic NAT diagram** — coming soon.
 
 ---
 
