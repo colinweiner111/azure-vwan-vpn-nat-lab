@@ -27,7 +27,7 @@ This lab deploys an end-to-end **Azure Virtual WAN** environment with **VPN Site
 
 Each branch IP maps 1:1 to a public TEST-NET IP. Both sides can initiate traffic.
 
-![Azure vWAN VPN NAT Architecture — Static NAT (1:1 mapping)](image/vwan-nat-diagram.svg)
+![Azure vWAN VPN NAT Architecture — Static NAT (1:1 mapping)](image/vwan-nat-diagram-static.svg)
 
 ---
 
@@ -35,9 +35,7 @@ Each branch IP maps 1:1 to a public TEST-NET IP. Both sides can initiate traffic
 
 Many branch IPs share a single external IP using port translation (PAT). Only the branch side can initiate.
 
-> **Dynamic NAT diagram placeholder** — *add `image/vwan-nat-dynamic-diagram.svg` to replace*
-
-![Azure vWAN VPN NAT Architecture — Dynamic NAT (PAT)](image/vwan-nat-dynamic-diagram.svg)
+![Azure vWAN VPN NAT Architecture — Dynamic NAT (PAT)](image/vwan-nat-diagram-dynamic.drawio.svg)
 
 With Dynamic NAT (`natType=Dynamic`), the VPN gateway uses **port address translation (PAT)** to map many branch IPs to a single (or few) external IPs. The external range can be as small as a `/32`.
 

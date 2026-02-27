@@ -20,7 +20,7 @@ param hub2NatExternalRange string
 param natType string = 'Static'
 
 @description('Use APIPA (169.254.x.x) addresses for BGP peering over VPN tunnels')
-param useApipaBgp bool = true
+param useApipaBgp bool = false
 
 @description('Branch APIPA BGP address (used for all hub BGP sessions)')
 param branchApipaBgpIp string = '169.254.21.2'
@@ -47,6 +47,7 @@ var branchGwName = 'branch1-vpngw'
 var branchGwIpConfigId = resourceId('Microsoft.Network/virtualNetworkGateways/ipConfigurations', branchGwName, 'default')
 
 // Branch gateway BGP settings — conditionally include APIPA custom addresses
+// NOTE: APIPA works fine on traditional VPN gateways (branch side)
 var branchBgpSettings = union({
   asn: 65010
 }, useApipaBgp ? {
@@ -106,6 +107,11 @@ resource branchVpnGateway 'Microsoft.Network/virtualNetworkGateways@2023-11-01' 
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  Hub VPN Gateways (with BGP Route Translation for NAT)                     ║
+// ║                                                                            ║
+// ║  IMPORTANT: vWAN VPN gateways silently ignore customBgpIpAddresses during  ║
+// ║  initial ARM/Bicep creation. APIPA addresses MUST be set via REST API PUT  ║
+// ║  after the gateway is provisioned and Succeeded. The deploy script handles ║
+// ║  this as a post-deployment step (Phase 2).                                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 resource hub1VpnGw 'Microsoft.Network/vpnGateways@2023-11-01' = {
@@ -229,10 +235,15 @@ resource vpnSite 'Microsoft.Network/vpnSites@2023-11-01' = {
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  Hub → Branch VPN Connections (with NAT rules + optional APIPA BGP)        ║
+// ║  Hub → Branch VPN Connections (with NAT rules)                             ║
 // ║                                                                            ║
-// ║  When APIPA BGP is enabled, vpnGatewayCustomBgpAddresses maps each hub     ║
-// ║  gateway instance to an APIPA address for BGP peering.                     ║
+// ║  Hub connections are created WITHOUT vpnGatewayCustomBgpAddresses.         ║
+// ║  When APIPA BGP is enabled, the deploy script updates these connections    ║
+// ║  via REST API after setting APIPA on the hub gateways (Phase 3).           ║
+// ║                                                                            ║
+// ║  This two-phase approach is needed because vWAN VPN gateways silently      ║
+// ║  ignore customBgpIpAddresses during ARM creation — the APIPA addresses     ║
+// ║  must be set on the gateway first, then connections can reference them.     ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01' = {
@@ -252,16 +263,6 @@ resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
           }
           sharedKey: 'abc123'
           enableBgp: true
-          vpnGatewayCustomBgpAddresses: useApipaBgp ? [
-            {
-              ipConfigurationId: '${hub1VpnGw.id}/ipConfigurations/Instance0'
-              customBgpIpAddress: hub1ApipaInstance0
-            }
-            {
-              ipConfigurationId: '${hub1VpnGw.id}/ipConfigurations/Instance1'
-              customBgpIpAddress: hub1ApipaInstance1
-            }
-          ] : []
           ingressNatRules: [
             {
               id: hub1IngressNat.id
@@ -293,16 +294,6 @@ resource hub2BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
           }
           sharedKey: 'abc123'
           enableBgp: true
-          vpnGatewayCustomBgpAddresses: useApipaBgp ? [
-            {
-              ipConfigurationId: '${hub2VpnGw.id}/ipConfigurations/Instance0'
-              customBgpIpAddress: hub2ApipaInstance0
-            }
-            {
-              ipConfigurationId: '${hub2VpnGw.id}/ipConfigurations/Instance1'
-              customBgpIpAddress: hub2ApipaInstance1
-            }
-          ] : []
           ingressNatRules: [
             {
               id: hub2IngressNat.id
@@ -323,6 +314,8 @@ resource hub2BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
 // ║  When APIPA BGP is enabled, the LNGs use APIPA addresses for BGP          ║
 // ║  peering instead of the hub's default private IPs. The branch connections  ║
 // ║  specify which APIPA address the branch gateway uses for each tunnel.      ║
+// ║                                                                            ║
+// ║  NOTE: APIPA works perfectly on traditional (non-vWAN) VPN gateways.      ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 // Local Gateways for Hub1
@@ -376,6 +369,8 @@ resource lngHub2Gw2 'Microsoft.Network/localNetworkGateways@2023-11-01' = {
 }
 
 // VPN Connections from Branch to Hubs (with optional APIPA BGP)
+// NOTE: Branch-side connections use gatewayCustomBgpIpAddresses which works
+// fine on traditional VPN gateways (unlike vWAN gateways).
 resource branchToHub1Gw1Conn 'Microsoft.Network/connections@2023-11-01' = {
   name: 'branch1-to-${hub1Name}-gw1'
   location: location
@@ -383,9 +378,11 @@ resource branchToHub1Gw1Conn 'Microsoft.Network/connections@2023-11-01' = {
     connectionType: 'IPsec'
     virtualNetworkGateway1: {
       id: branchVpnGateway.id
+      properties: {}
     }
     localNetworkGateway2: {
       id: lngHub1Gw1.id
+      properties: {}
     }
     sharedKey: 'abc123'
     enableBgp: true
@@ -405,9 +402,11 @@ resource branchToHub1Gw2Conn 'Microsoft.Network/connections@2023-11-01' = {
     connectionType: 'IPsec'
     virtualNetworkGateway1: {
       id: branchVpnGateway.id
+      properties: {}
     }
     localNetworkGateway2: {
       id: lngHub1Gw2.id
+      properties: {}
     }
     sharedKey: 'abc123'
     enableBgp: true
@@ -427,9 +426,11 @@ resource branchToHub2Gw1Conn 'Microsoft.Network/connections@2023-11-01' = {
     connectionType: 'IPsec'
     virtualNetworkGateway1: {
       id: branchVpnGateway.id
+      properties: {}
     }
     localNetworkGateway2: {
       id: lngHub2Gw1.id
+      properties: {}
     }
     sharedKey: 'abc123'
     enableBgp: true
@@ -449,9 +450,11 @@ resource branchToHub2Gw2Conn 'Microsoft.Network/connections@2023-11-01' = {
     connectionType: 'IPsec'
     virtualNetworkGateway1: {
       id: branchVpnGateway.id
+      properties: {}
     }
     localNetworkGateway2: {
       id: lngHub2Gw2.id
+      properties: {}
     }
     sharedKey: 'abc123'
     enableBgp: true
@@ -471,6 +474,10 @@ resource branchToHub2Gw2Conn 'Microsoft.Network/connections@2023-11-01' = {
 output branchVpnGatewayId string = branchVpnGateway.id
 output hub1VpnGwId string = hub1VpnGw.id
 output hub2VpnGwId string = hub2VpnGw.id
+output hub1VpnGwName string = hub1VpnGw.name
+output hub2VpnGwName string = hub2VpnGw.name
+output hub1ConnName string = hub1BranchConn.name
+output hub2ConnName string = hub2BranchConn.name
 output vpnSiteId string = vpnSite.id
 output hub1IngressNatId string = hub1IngressNat.id
 output hub2IngressNatId string = hub2IngressNat.id

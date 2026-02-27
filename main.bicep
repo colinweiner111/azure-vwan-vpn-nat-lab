@@ -48,7 +48,7 @@ param hub2NatExternalRange string = '198.51.100.0/24'
 param natType string = 'Static'
 
 @description('Use APIPA (169.254.x.x) addresses for BGP peering over VPN tunnels')
-param useApipaBgp bool = true
+param useApipaBgp bool = false
 
 @description('Branch APIPA BGP address')
 param branchApipaBgpIp string = '169.254.21.2'
