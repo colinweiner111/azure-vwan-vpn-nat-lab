@@ -2,9 +2,9 @@
 
 ## TL;DR
 
-This lab deploys an end-to-end **Azure Virtual WAN** environment with **VPN Site-to-Site NAT** that translates branch private address space (`10.100.0.0/24`) to public [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) TEST-NET ranges — so you can **see NAT working** in route tables, tcpdump, and firewall logs without any ambiguity.
+This lab deploys an end-to-end **Azure Virtual WAN** environment with **VPN Site-to-Site NAT** demonstrating both **IngressSnat** (translate branch addresses as they enter the hub) and **EgressSnat** (translate spoke addresses as they leave toward a branch). NAT targets use public [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) TEST-NET ranges — so you can **see NAT working** in route tables, tcpdump, and firewall logs without any ambiguity.
 
-**What makes this different:** Most VPN NAT demos translate one RFC 1918 range to another (`10.x` → `172.x`), making it hard to tell if NAT is actually working. This lab uses reserved **public IP ranges** as the NAT target — when you see `203.0.113.x` in a route table or packet capture, you *know* that's a NAT'd address.
+**What makes this different:** Most VPN NAT demos translate one RFC 1918 range to another (`10.x` → `172.x`), making it hard to tell if NAT is actually working. This lab uses reserved **public IP ranges** as the NAT target — when you see `203.0.113.x` in a route table or packet capture, you *know* that's a NAT'd address. It also demonstrates the **real-world pattern** of presenting spoke addresses as a different range to a remote partner (e.g., a financial institution's IPSEC worksheet requiring `203.0.113.0/26` instead of your actual `172.16.2.0/26`).
 
 | Feature | Details |
 |---------|---------|
@@ -74,7 +74,7 @@ The lab uses three /24 blocks that IANA has permanently reserved for documentati
 |---|---|---|---|
 | `203.0.113.0/24` | TEST-NET-3 | Hub1 NAT external mapping | Documentation & examples |
 | `198.51.100.0/24` | TEST-NET-2 | Hub2 NAT external mapping | Documentation & examples |
-| `192.0.2.0/24` | TEST-NET-1 | *(not used — available for expansion)* | Documentation & examples |
+| `192.0.2.0/24` | TEST-NET-1 | Available for expansion (see [Gotchas](#gotchas--lessons-learned) for why IngressSnat + EgressSnat can't share an external range) | Documentation & examples |
 
 **Official references:**
 - [RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737) (IETF) — The authoritative standard defining these three /24 blocks
@@ -85,7 +85,20 @@ The lab uses three /24 blocks that IANA has permanently reserved for documentati
 
 ## How VPN NAT Works
 
-Each hub VPN gateway has one **IngressSnat** rule per branch connection.
+Each hub VPN gateway can have **IngressSnat** and/or **EgressSnat** rules attached to branch connections.
+
+### IngressSnat vs EgressSnat
+
+| | IngressSnat | EgressSnat |
+|---|---|---|
+| **Direction** | Branch → Hub (ingress into the hub) | Hub → Branch (egress from the hub) |
+| **What it NATs** | Branch addresses as they enter the hub | Spoke/hub addresses as they leave toward the branch |
+| **Internal mapping** | Branch real range (e.g., `10.100.0.0/24`) | Spoke real range (e.g., `172.16.2.0/26`) |
+| **External mapping** | What the hub sees (e.g., `198.51.100.0/24`) | What the branch sees (e.g., `203.0.113.0/26`) |
+| **Use case** | Overlapping branch ranges, branch identity masking | Present spoke addresses differently to a remote partner |
+| **Static NAT behavior** | Bidirectional — both sides can initiate | Bidirectional — both sides can initiate |
+
+> **Key insight:** With **Static** NAT, a single rule handles both directions automatically. An EgressSnat rule with internal `172.16.2.0/26` → external `203.0.113.0/26` means: spoke-to-branch traffic has its source NAT'd from `172.16.2.x` to `203.0.113.x`, and branch-to-spoke traffic addressed to `203.0.113.x` is reverse-NAT'd back to `172.16.2.x`. You do **not** need both IngressSnat and EgressSnat for the same flow.
 
 ### Portal: NAT Rules Blade
 
@@ -95,14 +108,23 @@ Each hub VPN gateway has one **IngressSnat** rule per branch connection.
 
 ### Static NAT Flow
 
-Static IngressSnat automatically handles both directions — source NAT on ingress and reverse destination NAT on egress:
+Static NAT automatically handles both directions — source NAT in the named direction and reverse destination NAT in the opposite direction:
+
+#### IngressSnat (Branch → Hub)
 
 | Rule | Traffic Direction | Effect |
 |---|---|---|
-| **IngressSnat** | Branch → Hub | Source IP `10.100.0.x` translated to `203.0.113.x` (Hub1) / `198.51.100.x` (Hub2) |
-| *(reverse)* | Hub → Branch | Destination IP `203.0.113.x` / `198.51.100.x` translated back to `10.100.0.x` automatically |
+| **IngressSnat** | Branch → Hub | Source IP `10.100.0.x` translated to `198.51.100.x` (Hub2) |
+| *(reverse)* | Hub → Branch | Destination IP `198.51.100.x` translated back to `10.100.0.x` automatically |
 
-> **Note:** A separate EgressSnat rule is **not needed** for static NAT. Using both IngressSnat and EgressSnat with the same external mapping on the same connection will cause an overlapping address space error.
+#### EgressSnat (Spoke → Branch)
+
+| Rule | Traffic Direction | Effect |
+|---|---|---|
+| **EgressSnat** | Hub → Branch | Source IP `172.16.2.x` translated to `203.0.113.x` (Hub1) |
+| *(reverse)* | Branch → Hub | Destination IP `203.0.113.x` translated back to `172.16.2.x` automatically |
+
+> **Important:** IngressSnat and EgressSnat with the **same external mapping** on the **same connection** will silently fail — Azure accepts the PUT but quietly drops the `egressNatRules` attachment. Use **different external ranges** if you need both on the same connection (see [Gotchas](#gotchas--lessons-learned)).
 
 #### Dynamic NAT Flow
 
@@ -136,17 +158,34 @@ The `enableBgpRouteTranslationForNat` flag on the VPN gateway ensures that:
 - Spokes, other branches, and ExpressRoute connections all see the **post-NAT** prefix
 - The DefaultRouteTable shows `203.0.113.0/24` with next hop `VPN_S2S_Gateway`
 
-### Packet Flow (Branch → Spoke via Hub1)
+### Packet Flow — IngressSnat (Branch → Spoke via Hub2)
 
 | Step | Source IP | Destination IP | Location |
 |---|---|---|---|
-| 1. Branch1-VM sends ping | `10.100.0.4` | `172.16.1.4` | Branch VNet |
-| 2. Enters Hub1 VPN GW (IngressSnat) | **`203.0.113.4`** | `172.16.1.4` | Hub1 |
-| 3. Routed through Azure Firewall | `203.0.113.4` | `172.16.1.4` | Hub1 |
-| 4. Arrives at spoke1 VM | `203.0.113.4` | `172.16.1.4` | Spoke VNet |
-| 5. Spoke1 VM replies | `172.16.1.4` | `203.0.113.4` | Spoke VNet |
-| 6. Leaves Hub1 VPN GW (reverse NAT) | `172.16.1.4` | **`10.100.0.4`** | Hub1 |
-| 7. Arrives at branch | `172.16.1.4` | `10.100.0.4` | Branch VNet |
+| 1. Branch1-VM sends ping | `10.100.0.4` | `172.16.3.4` | Branch VNet |
+| 2. Enters Hub2 VPN GW (IngressSnat) | **`198.51.100.4`** | `172.16.3.4` | Hub2 |
+| 3. Routed through Azure Firewall | `198.51.100.4` | `172.16.3.4` | Hub2 |
+| 4. Arrives at hub2-spoke1 VM | `198.51.100.4` | `172.16.3.4` | Spoke VNet |
+| 5. Spoke VM replies | `172.16.3.4` | `198.51.100.4` | Spoke VNet |
+| 6. Leaves Hub2 VPN GW (reverse NAT) | `172.16.3.4` | **`10.100.0.4`** | Hub2 |
+| 7. Arrives at branch | `172.16.3.4` | `10.100.0.4` | Branch VNet |
+
+### Packet Flow — EgressSnat (Spoke → Branch via Hub1)
+
+This is the **BlackRock / OST pattern** — spoke `172.16.2.0/26` is presented to the branch as `203.0.113.0/26`:
+
+| Step | Source IP | Destination IP | Location |
+|---|---|---|---|
+| 1. hub1-spoke2-vm sends ping | `172.16.2.4` | `10.100.0.4` | Spoke VNet |
+| 2. Routed through Azure Firewall | `172.16.2.4` | `10.100.0.4` | Hub1 |
+| 3. Leaves Hub1 VPN GW (EgressSnat) | **`203.0.113.4`** | `10.100.0.4` | Hub1 |
+| 4. Arrives at branch1-vm | `203.0.113.4` | `10.100.0.4` | Branch VNet |
+| 5. Branch1-VM replies | `10.100.0.4` | `203.0.113.4` | Branch VNet |
+| 6. Enters Hub1 VPN GW (reverse EgressSnat) | `10.100.0.4` | **`172.16.2.4`** | Hub1 |
+| 7. Routed through Azure Firewall | `10.100.0.4` | `172.16.2.4` | Hub1 |
+| 8. Arrives at spoke2 VM | `10.100.0.4` | `172.16.2.4` | Spoke VNet |
+
+> **Note:** With EgressSnat, the branch sees `203.0.113.x` as the source — it never learns the real spoke address `172.16.2.x`. This is exactly how financial IPSEC worksheets work: each party agrees on a "presented" address range.
 
 ---
 
@@ -197,6 +236,14 @@ cd azure-vwan-vpn-nat-lab
 
 # Deploy without APIPA BGP (Phase 2 is skipped — single-phase Bicep only)
 .\deploy-bicep.ps1 -UseApipaBgp $false
+
+# Deploy with EgressSnat on Hub1 (spoke 172.16.2.0/26 → 203.0.113.0/26 toward branch)
+.\deploy-bicep.ps1 `
+    -ResourceGroupName vwan-vpn-nat-lab `
+    -Location westus3 `
+    -EnableHub1EgressSnat $true `
+    -Hub1EgressInternalRange "172.16.2.0/26" `
+    -Hub1EgressExternalRange "203.0.113.0/26"
 ```
 
 Deployment takes approximately **60–90 minutes** for Phase 1 (VPN gateways are the bottleneck), plus **~10 minutes** for Phase 2 APIPA configuration.
@@ -215,6 +262,9 @@ Deployment takes approximately **60–90 minutes** for Phase 1 (VPN gateways are
 | `Hub2NatExternalRange` | `198.51.100.0/24` | Hub2 public NAT range (post-NAT) |
 | `NatType` | `Static` | NAT rule type: `Static` (1:1 mapping) or `Dynamic` (many-to-few PAT) |
 | `UseApipaBgp` | `$true` | Use APIPA addresses (169.254.x.x) for BGP peering |
+| `EnableHub1EgressSnat` | `$false` | Deploy EgressSnat on Hub1 (spoke → branch NAT) |
+| `Hub1EgressInternalRange` | `172.16.2.0/26` | Spoke real range for EgressSnat (pre-NAT) |
+| `Hub1EgressExternalRange` | `203.0.113.0/26` | What the branch sees (post-NAT) |
 
 ---
 
@@ -225,7 +275,8 @@ Deployment takes approximately **60–90 minutes** for Phase 1 (VPN gateways are
 - **1 Branch VNet** with VPN Gateway (BGP ASN 65010)
 - **2 Hub VPN Gateways** with:
   - `enableBgpRouteTranslationForNat: true`
-  - Configurable IngressSnat NAT rules (Static or Dynamic)
+  - Configurable IngressSnat NAT rules (Static or Dynamic) via Bicep
+  - Optional EgressSnat rules (Static) added via REST API / Portal for spoke-to-branch NAT
   - Optional APIPA BGP custom peering addresses (169.254.x.x)
 - **2 Azure Firewalls** (Hub SKU) with Routing Intent (InternetAndPrivate)
 - **Azure Bastion** (Standard, IP-based connections)
@@ -234,13 +285,15 @@ Deployment takes approximately **60–90 minutes** for Phase 1 (VPN gateways are
 
 ### VM Network Information
 
-| VM Name | VNet | Actual IP Range | Appears as (Hub1) | Appears as (Hub2) |
-|---------|------|-----------------|--------------------|--------------------|
-| branch1-vm | branch1 | 10.100.0.0/24 | 203.0.113.0/24 | 198.51.100.0/24 |
-| hub1-spoke1-vm | hub1-spoke1 | 172.16.1.0/27 | *(no NAT)* | *(no NAT)* |
-| hub1-spoke2-vm | hub1-spoke2 | 172.16.2.0/27 | *(no NAT)* | *(no NAT)* |
-| hub2-spoke1-vm | hub2-spoke1 | 172.16.3.0/27 | *(no NAT)* | *(no NAT)* |
-| hub2-spoke2-vm | hub2-spoke2 | 172.16.4.0/27 | *(no NAT)* | *(no NAT)* |
+| VM Name | VNet | Actual IP Range | NAT'd as (Hub1) | NAT'd as (Hub2) | NAT Rule |
+|---------|------|-----------------|------------------|-------------------|----------|
+| branch1-vm | branch1 | 10.100.0.0/24 | *(no IngressSnat on hub1)* | 198.51.100.0/24 | Hub2 IngressSnat |
+| hub1-spoke1-vm | hub1-spoke1 | 172.16.1.0/27 | *(no NAT)* | *(no NAT)* | — |
+| hub1-spoke2-vm | hub1-spoke2 | 172.16.2.0/27 | 203.0.113.0/26 → branch sees this | *(no NAT)* | Hub1 EgressSnat |
+| hub2-spoke1-vm | hub2-spoke1 | 172.16.3.0/27 | *(no NAT)* | *(no NAT)* | — |
+| hub2-spoke2-vm | hub2-spoke2 | 172.16.4.0/27 | *(no NAT)* | *(no NAT)* | — |
+
+> **Current deployed state:** Hub1 has EgressSnat (spoke2 → `203.0.113.0/26`), Hub2 has IngressSnat (branch → `198.51.100.0/24`). This demonstrates **both** NAT directions in a single lab.
 
 ---
 
@@ -248,37 +301,42 @@ Deployment takes approximately **60–90 minutes** for Phase 1 (VPN gateways are
 
 ### 1. Verify NAT Rules via CLI
 
-Confirm the NAT rules are deployed and are Static type:
+Confirm the NAT rules are deployed:
 
 ```powershell
-# Hub1 NAT rules
-az network vpn-gateway nat-rule list --gateway-name hub1-vpngw -g vwan-vpn-nat-lab -o table
+# Hub1 NAT rules (should show EgressSnat-Spoke2)
+az network vpn-gateway nat-rule list --gateway-name hub1-vpngw -g vwan-natdemo -o table
 
-# Hub2 NAT rules
-az network vpn-gateway nat-rule list --gateway-name hub2-vpngw -g vwan-vpn-nat-lab -o table
-
-# Confirm Static type (look for '"type": "Static"')
-az network vpn-gateway nat-rule show --gateway-name hub1-vpngw -g vwan-vpn-nat-lab -n IngressSnat-Branch1 -o json | Select-String '"type"'
+# Hub2 NAT rules (should show IngressSnat-Branch1)
+az network vpn-gateway nat-rule list --gateway-name hub2-vpngw -g vwan-natdemo -o table
 ```
 
 Expected output:
 
-| Name | Mode | Internal | External |
-|---|---|---|---|
-| IngressSnat-Branch1 | IngressSnat | 10.100.0.0/24 | 203.0.113.0/24 (Hub1) |
-| IngressSnat-Branch1 | IngressSnat | 10.100.0.0/24 | 198.51.100.0/24 (Hub2) |
+| Hub | Name | Mode | Internal | External |
+|---|---|---|---|---|
+| Hub1 | EgressSnat-Spoke2 | EgressSnat | 172.16.2.0/26 | 203.0.113.0/26 |
+| Hub2 | IngressSnat-Branch1 | IngressSnat | 10.100.0.0/24 | 198.51.100.0/24 |
 
 ### 2. Verify NAT Rule Bound to VPN Connection
 
 ```powershell
+# Hub1 — should show egressNatRules referencing EgressSnat-Spoke2
 az network vpn-gateway connection show \
-  --gateway-name hub1-vpngw -g vwan-vpn-nat-lab \
+  --gateway-name hub1-vpngw -g vwan-natdemo \
   -n site-branch1-conn \
-  --query "{status:provisioningState, ingressNat:vpnLinkConnections[0].ingressNatRules}" \
+  --query "{status:provisioningState, egressNat:vpnLinkConnections[0].egressNatRules, ingressNat:vpnLinkConnections[0].ingressNatRules}" \
+  -o json
+
+# Hub2 — should show ingressNatRules referencing IngressSnat-Branch1
+az network vpn-gateway connection show \
+  --gateway-name hub2-vpngw -g vwan-natdemo \
+  -n site-branch1-conn \
+  --query "{status:provisioningState, egressNat:vpnLinkConnections[0].egressNatRules, ingressNat:vpnLinkConnections[0].ingressNatRules}" \
   -o json
 ```
 
-You should see the `ingressNatRules` array referencing the `IngressSnat-Branch1` NAT rule, and no `egressNatRules`.
+Hub1 should have `egressNatRules` populated (and no `ingressNatRules`). Hub2 should have `ingressNatRules` populated (and no `egressNatRules`).
 
 ### 3. Check Effective Routes — Azure Firewall (Best View)
 
@@ -288,12 +346,21 @@ This is the **best visual proof** of NAT working. In the Azure Portal:
 2. Set **Choose resource type** = `Azure Firewall`
 3. Set **Resource** = `hub1-azfw` or `hub2-azfw`
 
-What to look for on **hub2-azfw**:
+What to look for on **hub1-azfw** (EgressSnat hub):
 
 | Prefix | Next Hop Type | Next Hop | Meaning |
 |---|---|---|---|
-| **198.51.100.0/24** | VPN_S2S_Gateway | hub2-vpngw | Hub2's own NAT'd branch range |
-| **203.0.113.0/24** | Remote Hub | hub1 | Hub1's NAT'd branch, learned via inter-hub |
+| **203.0.113.0/26** | VPN_S2S_Gateway | hub1-vpngw | EgressSnat — spoke2 presented as this range to branch |
+| **198.51.100.0/24** | Remote Hub | hub2 | Hub2's IngressSnat'd branch range |
+| 172.16.1.0/24 | Virtual Network Connection | hub1-spoke1-conn | Hub1's local spoke |
+| 172.16.3.0/24 | Remote Hub | hub2 | Hub2's spoke, learned via inter-hub |
+
+What to look for on **hub2-azfw** (IngressSnat hub):
+
+| Prefix | Next Hop Type | Next Hop | Meaning |
+|---|---|---|---|
+| **198.51.100.0/24** | VPN_S2S_Gateway | hub2-vpngw | Hub2's own IngressSnat'd branch range |
+| **203.0.113.0/26** | Remote Hub | hub1 | Hub1's EgressSnat range, learned via inter-hub |
 | 172.16.3.0/24 | Virtual Network Connection | hub2-spoke1-conn | Hub2's local spoke |
 | 172.16.1.0/24 | Remote Hub | hub1 | Hub1's spoke, learned via inter-hub |
 
@@ -302,7 +369,7 @@ What to look for on **hub2-azfw**:
 ### 4. Check Effective Routes — Spoke VM NIC
 
 ```powershell
-az network nic show-effective-route-table -g vwan-vpn-nat-lab -n hub1-spoke1-vm-nic -o table
+az network nic show-effective-route-table -g vwan-natdemo -n hub1-spoke1-vm-nic -o table
 ```
 
 With Routing Intent enabled, you'll see broad aggregates (`0.0.0.0/0`, `10.0.0.0/8`, `172.16.0.0/12`) pointing to the Azure Firewall. The specific NAT'd prefix isn't visible here — it's abstracted behind the firewall. This is **expected behavior** with Routing Intent.
@@ -311,7 +378,32 @@ With Routing Intent enabled, you'll see broad aggregates (`0.0.0.0/0`, `10.0.0.0
 
 This proves end-to-end NAT translation with actual packets.
 
-**Terminal 1:** Connect to `hub1-spoke1-vm` via Bastion, start capture:
+#### EgressSnat Test (Hub1 — Spoke → Branch)
+
+**Terminal 1:** Connect to `branch1-vm` via Bastion, start capture:
+
+```bash
+sudo tcpdump -i eth0 icmp -n
+```
+
+**Terminal 2:** Connect to `hub1-spoke2-vm` via Bastion, ping the branch:
+
+```bash
+ping 10.100.0.4
+```
+
+**What you see on branch1's tcpdump:**
+
+```
+203.0.113.4 > 10.100.0.4: ICMP echo request
+10.100.0.4 > 203.0.113.4: ICMP echo reply
+```
+
+The source is **`203.0.113.4`** (NAT'd spoke2), NOT `172.16.2.4` (spoke real IP). The branch never sees the actual spoke address.
+
+#### IngressSnat Test (Hub2 — Branch → Spoke)
+
+**Terminal 1:** Connect to `hub2-spoke1-vm` via Bastion, start capture:
 
 ```bash
 sudo tcpdump -i eth0 icmp -n
@@ -320,17 +412,17 @@ sudo tcpdump -i eth0 icmp -n
 **Terminal 2:** Connect to `branch1-vm` via Bastion, ping the spoke:
 
 ```bash
-ping 172.16.1.4
+ping 172.16.3.4
 ```
 
-**What you see on spoke1's tcpdump:**
+**What you see on hub2-spoke1's tcpdump:**
 
 ```
-203.0.113.4 > 172.16.1.4: ICMP echo request
-172.16.1.4 > 203.0.113.4: ICMP echo reply
+198.51.100.4 > 172.16.3.4: ICMP echo request
+172.16.3.4 > 198.51.100.4: ICMP echo reply
 ```
 
-The source is **`203.0.113.4`** (NAT'd), NOT `10.100.0.4` (branch real IP). This is the definitive proof.
+The source is **`198.51.100.4`** (NAT'd branch), NOT `10.100.0.4` (branch real IP).
 
 > **Note:** The VPN tunnels must be in **Connected** state for this test. Since the lab uses a simulated branch (VNet + VPN Gateway), tunnels auto-negotiate after deployment. Allow a few minutes after deployment completes.
 
@@ -338,7 +430,7 @@ The source is **`203.0.113.4`** (NAT'd), NOT `10.100.0.4` (branch real IP). This
 
 ```powershell
 # Check branch-side connections
-az network vpn-connection list -g vwan-vpn-nat-lab \
+az network vpn-connection list -g vwan-natdemo \
   --query "[].{name:name, status:connectionStatus}" -o table
 ```
 
@@ -372,12 +464,12 @@ Check that the VPN gateway advertises the NAT'd prefix, not the original:
 
 ```powershell
 # Show VPN gateway BGP settings
-az network vpn-gateway show -g vwan-vpn-nat-lab -n hub1-vpngw \
+az network vpn-gateway show -g vwan-natdemo -n hub1-vpngw \
   --query "{bgpEnabled:bgpSettings.asn, natTranslation:enableBgpRouteTranslationForNat}" -o json
 ```
 
 `enableBgpRouteTranslationForNat` should be `true`, meaning:
-- Hub1 advertises `203.0.113.0/24` (not `10.100.0.0/24`) to spokes and other hubs
+- Hub1 advertises `203.0.113.0/26` (the EgressSnat external range) to branches via BGP
 - Hub2 advertises `198.51.100.0/24` (not `10.100.0.0/24`) to spokes and other hubs
 
 ### Quick Summary: What to Show a Customer
@@ -385,8 +477,9 @@ az network vpn-gateway show -g vwan-vpn-nat-lab -n hub1-vpngw \
 | Demo Step | What It Proves | Effort |
 |---|---|---|
 | Firewall Effective Routes (Portal) | NAT'd public ranges in routing table | 30 seconds |
-| NAT Rules via CLI | Static 1:1 mapping configuration | 30 seconds |
-| tcpdump on spoke VM | Actual packets show translated source IP | 2 minutes |
+| NAT Rules via CLI | IngressSnat + EgressSnat configuration | 30 seconds |
+| tcpdump — EgressSnat (spoke→branch) | Spoke IP translated to `203.0.113.x` at branch | 2 minutes |
+| tcpdump — IngressSnat (branch→spoke) | Branch IP translated to `198.51.100.x` at spoke | 2 minutes |
 | Firewall KQL logs | Firewall sees NAT'd IPs, not original | 1 minute |
 | BGP translation flag | Routes advertised post-NAT automatically | 30 seconds |
 
@@ -397,32 +490,47 @@ az network vpn-gateway show -g vwan-vpn-nat-lab -n hub1-vpngw \
 The NAT configuration lives in [modules/vpn.bicep](modules/vpn.bicep):
 
 ```bicep
-// NAT rules defined as child resources of the VPN gateway
-resource hub1IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
-  parent: hub1VpnGw
+// IngressSnat — translates branch addresses entering the hub
+// Deployed via Bicep (Hub2 in the current lab state)
+resource hub2IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
+  parent: hub2VpnGw
   name: 'IngressSnat-Branch1'
   properties: {
     type: natType       // 'Static' or 'Dynamic'
     mode: 'IngressSnat'
     internalMappings: [{ addressSpace: '10.100.0.0/24' }]    // Pre-NAT (branch actual)
-    externalMappings: [{ addressSpace: '203.0.113.0/24' }]    // Post-NAT (public range)
+    externalMappings: [{ addressSpace: '198.51.100.0/24' }]  // Post-NAT (what hub sees)
   }
 }
 
-// Hub connections are created WITHOUT vpnGatewayCustomBgpAddresses in Bicep.
-// The deploy script adds APIPA addresses via REST API in Phase 2.
+// EgressSnat — translates spoke addresses leaving toward the branch
+// Added via REST API / Portal (Hub1 in the current lab state)
+// This is the "BlackRock pattern": present spoke 172.16.2.0/26 as 203.0.113.0/26
+resource hub1EgressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
+  parent: hub1VpnGw
+  name: 'EgressSnat-Spoke2'
+  properties: {
+    type: 'Static'
+    mode: 'EgressSnat'
+    internalMappings: [{ addressSpace: '172.16.2.0/26' }]    // Pre-NAT (spoke actual)
+    externalMappings: [{ addressSpace: '203.0.113.0/26' }]   // Post-NAT (what branch sees)
+  }
+}
+
+// Hub connections reference NAT rules by ID
 resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01' = {
   parent: hub1VpnGw
   name: 'site-branch1-conn'
   properties: {
     vpnLinkConnections: [{
       properties: {
-        ingressNatRules: [{ id: hub1IngressNat.id }]
+        egressNatRules: [{ id: hub1EgressNat.id }]   // EgressSnat on hub1
         // vpnGatewayCustomBgpAddresses added by deploy script Phase 2
       }
     }]
   }
 }
+```
 ```
 
 ### Two-Phase APIPA Architecture Note
@@ -453,8 +561,36 @@ Same as the base lab — use **IP-based connection** via Bastion Standard:
 ## Cleanup
 
 ```powershell
-az group delete -n vwan-vpn-nat-lab --yes --no-wait
+az group delete -n vwan-natdemo --yes --no-wait
 ```
+
+---
+
+## Gotchas & Lessons Learned
+
+### 1. IngressSnat + EgressSnat Cannot Share an External Range on the Same Connection
+
+If you create an IngressSnat rule and an EgressSnat rule that both use `203.0.113.0/26` as the external mapping, and attach both to the **same** VPN connection, Azure will accept the REST PUT but **silently drop** the `egressNatRules` attachment. The connection will show only `ingressNatRules`.
+
+**Workaround:** Use different external ranges. For example, IngressSnat → `198.51.100.0/24`, EgressSnat → `203.0.113.0/26`.
+
+### 2. Static NAT Is Bidirectional — You Usually Only Need One Rule
+
+With **Static** NAT, a single rule handles both directions. If you only need to present spoke addresses differently to the branch (the BlackRock pattern), a single **EgressSnat** rule is sufficient — you don't also need an IngressSnat.
+
+Conversely, if you only need to translate branch addresses for the hub, a single **IngressSnat** rule is sufficient.
+
+### 3. Dynamic NAT Is Unidirectional
+
+With **Dynamic** NAT (PAT), only the **internal** side (the side whose addresses are being NAT'd) can initiate connections. The remote side cannot initiate because there's no static 1:1 mapping to resolve.
+
+### 4. Updating a NAT Rule's Mappings In-Place May Not Work
+
+REST API PUT to update an existing NAT rule's `internalMappings` or `externalMappings` may appear to succeed (200 OK) but keep the old values. **Solution:** Detach the rule from all connections, delete it, recreate with new mappings, and re-attach.
+
+### 5. Phase 2 REST PUT Must Preserve Full Gateway State
+
+When updating a vWAN VPN gateway via REST PUT (e.g., to add APIPA BGP addresses), you must GET the full gateway object first, merge your changes, and PUT back the complete object. A minimal PUT body will **replace** the entire gateway config, wiping connections and NAT rules.
 
 ---
 

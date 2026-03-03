@@ -49,7 +49,17 @@ param(
     [string]$Hub1ApipaInstance0   = "169.254.21.1",
     [string]$Hub1ApipaInstance1   = "169.254.22.1",
     [string]$Hub2ApipaInstance0   = "169.254.21.5",
-    [string]$Hub2ApipaInstance1   = "169.254.22.5"
+    [string]$Hub2ApipaInstance1   = "169.254.22.5",
+
+    # EgressSnat (optional — NATs spoke addresses toward the branch)
+    [Parameter(Mandatory=$false)]
+    [bool]$EnableHub1EgressSnat = $false,
+
+    [Parameter(Mandatory=$false)]
+    [string]$Hub1EgressInternalRange = "172.16.2.0/26",
+
+    [Parameter(Mandatory=$false)]
+    [string]$Hub1EgressExternalRange = "203.0.113.0/26"
 )
 
 $ErrorActionPreference = "Stop"
@@ -109,6 +119,9 @@ Write-Host "    Branch Internal:    $BranchInternalRange"
 Write-Host "    Hub1 External:      $Hub1NatExternalRange  (TEST-NET-3)"
 Write-Host "    Hub2 External:      $Hub2NatExternalRange  (TEST-NET-2)"
 Write-Host "    NAT Type:           $NatType"
+if ($EnableHub1EgressSnat) {
+    Write-Host "    Hub1 EgressSnat:    $Hub1EgressInternalRange → $Hub1EgressExternalRange" -ForegroundColor Magenta
+}
 Write-Host ""
 Write-Host "  BGP:" -ForegroundColor Yellow
 if ($UseApipaBgp) {
@@ -130,7 +143,7 @@ Write-Host "Deploying all infrastructure (60-90 minutes)..." -ForegroundColor Ye
 Write-Host "  - Virtual WAN with 2 secure hubs"
 Write-Host "  - 6 Virtual Networks + 5 Ubuntu VMs"
 Write-Host "  - Branch VPN Gateway + 2 Hub VPN Gateways"
-Write-Host "  - VPN NAT Rules ($NatType IngressSnat per hub)"
+Write-Host "  - VPN NAT Rules ($NatType IngressSnat per hub$(if ($EnableHub1EgressSnat) {' + EgressSnat on Hub1'}))"
 Write-Host "  - Hub connections (without APIPA — added in Phase 2)"
 Write-Host "  - 2 Azure Firewalls ($FirewallSku) + Routing Intent"
 Write-Host "  - Azure Bastion with IP-based connections"
@@ -156,7 +169,10 @@ az deployment sub create `
                  hub1ApipaInstance0=$Hub1ApipaInstance0 `
                  hub1ApipaInstance1=$Hub1ApipaInstance1 `
                  hub2ApipaInstance0=$Hub2ApipaInstance0 `
-                 hub2ApipaInstance1=$Hub2ApipaInstance1
+                 hub2ApipaInstance1=$Hub2ApipaInstance1 `
+                 enableHub1EgressSnat=$EnableHub1EgressSnat `
+                 hub1EgressInternalRange=$Hub1EgressInternalRange `
+                 hub1EgressExternalRange=$Hub1EgressExternalRange
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`nPhase 1 FAILED. Check deployment errors above." -ForegroundColor Red

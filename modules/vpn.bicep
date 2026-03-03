@@ -37,6 +37,15 @@ param hub2ApipaInstance0 string = '169.254.21.5'
 @description('Hub2 Instance1 APIPA BGP address')
 param hub2ApipaInstance1 string = '169.254.22.5'
 
+@description('Enable EgressSnat on Hub1 to NAT spoke addresses toward the branch')
+param enableHub1EgressSnat bool = false
+
+@description('Spoke internal range for Hub1 EgressSnat (actual spoke CIDR)')
+param hub1EgressInternalRange string = '172.16.2.0/26'
+
+@description('Spoke external range for Hub1 EgressSnat (what the branch sees)')
+param hub1EgressExternalRange string = '203.0.113.0/26'
+
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  Variables                                                                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -172,6 +181,39 @@ resource hub1IngressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = {
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  VPN NAT Rules — Hub1 EgressSnat (Optional)                               ║
+// ║                                                                            ║
+// ║  EgressSnat: Hub → Branch traffic. Source IP of spoke VMs translated to    ║
+// ║              the external range so the branch sees a different address.    ║
+// ║                                                                            ║
+// ║  Use case: Present spoke 172.16.2.0/26 as 203.0.113.0/26 to a remote     ║
+// ║  partner (e.g., IPSEC worksheet requiring specific address ranges).       ║
+// ║                                                                            ║
+// ║  NOTE: Do NOT use the same external range for both IngressSnat and        ║
+// ║  EgressSnat on the same connection — Azure silently drops the egress      ║
+// ║  attachment. Use different external ranges.                                ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+resource hub1EgressNat 'Microsoft.Network/vpnGateways/natRules@2023-11-01' = if (enableHub1EgressSnat) {
+  parent: hub1VpnGw
+  name: 'EgressSnat-Spoke2'
+  properties: {
+    type: 'Static'
+    mode: 'EgressSnat'
+    internalMappings: [
+      {
+        addressSpace: hub1EgressInternalRange
+      }
+    ]
+    externalMappings: [
+      {
+        addressSpace: hub1EgressExternalRange
+      }
+    ]
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  VPN NAT Rules — Hub2                                                      ║
 // ║                                                                            ║
 // ║  Same pattern as Hub1 but maps to a different public range                 ║
@@ -268,12 +310,18 @@ resource hub1BranchConn 'Microsoft.Network/vpnGateways/vpnConnections@2023-11-01
               id: hub1IngressNat.id
             }
           ]
+          egressNatRules: enableHub1EgressSnat ? [
+            {
+              id: hub1EgressNat.id
+            }
+          ] : []
         }
       }
     ]
   }
   dependsOn: [
     hub1IngressNat
+    hub1EgressNat
   ]
 }
 
@@ -481,6 +529,7 @@ output hub2ConnName string = hub2BranchConn.name
 output vpnSiteId string = vpnSite.id
 output hub1IngressNatId string = hub1IngressNat.id
 output hub2IngressNatId string = hub2IngressNat.id
+output hub1EgressNatId string = enableHub1EgressSnat ? hub1EgressNat.id : 'N/A (EgressSnat not enabled)'
 output natRuleType string = natType
 output apipaBgpEnabled bool = useApipaBgp
 output branchApipaBgpAddress string = useApipaBgp ? branchApipaBgpIp : 'N/A (using default BGP IPs)'

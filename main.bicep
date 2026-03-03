@@ -50,6 +50,15 @@ param natType string = 'Static'
 @description('Use APIPA (169.254.x.x) addresses for BGP peering over VPN tunnels')
 param useApipaBgp bool = false
 
+@description('Enable EgressSnat on Hub1 to NAT spoke addresses toward the branch')
+param enableHub1EgressSnat bool = false
+
+@description('Spoke internal range for Hub1 EgressSnat (actual spoke CIDR)')
+param hub1EgressInternalRange string = '172.16.2.0/26'
+
+@description('Spoke external range for Hub1 EgressSnat (what the branch sees — RFC 5737 TEST-NET-3)')
+param hub1EgressExternalRange string = '203.0.113.0/26'
+
 @description('Branch APIPA BGP address')
 param branchApipaBgpIp string = '169.254.21.2'
 
@@ -122,6 +131,9 @@ module vpn 'modules/vpn.bicep' = {
     hub1ApipaInstance1: hub1ApipaInstance1
     hub2ApipaInstance0: hub2ApipaInstance0
     hub2ApipaInstance1: hub2ApipaInstance1
+    enableHub1EgressSnat: enableHub1EgressSnat
+    hub1EgressInternalRange: hub1EgressInternalRange
+    hub1EgressExternalRange: hub1EgressExternalRange
   }
   dependsOn: [
     network
