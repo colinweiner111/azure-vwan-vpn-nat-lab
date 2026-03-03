@@ -87,6 +87,12 @@ The lab uses three /24 blocks that IANA has permanently reserved for documentati
 
 Each hub VPN gateway has one **IngressSnat** rule per branch connection.
 
+### Portal: NAT Rules Blade
+
+![Azure Portal — VPN Gateway NAT Rules configuration](image/portal-nat-rule.png)
+
+> The NAT Rules blade on a vWAN VPN Gateway. Key elements: **Enable Bgp Route Translation** must be toggled on, each rule needs a **VPN Link Connection** associated (note "0 Selected" means the rule is inactive), and **Internal/External Port Mappings** are only needed for port-specific NAT.
+
 ### Static NAT Flow
 
 Static IngressSnat automatically handles both directions — source NAT on ingress and reverse destination NAT on egress:
