@@ -200,20 +200,17 @@ else {
     # ── Step 2b: PUT APIPA on Hub1 gateway ───────────────────────────────────
     Write-Host "`n[Step 2b] Setting APIPA BGP on hub1-vpngw..." -ForegroundColor Cyan
 
+    # Merge APIPA into the full gateway object from Step 2a to preserve connections & NAT rules
+    $hub1Gw.properties.bgpSettings.bgpPeeringAddresses = @(
+        @{ ipconfigurationId = "Instance0"; customBgpIpAddresses = @($Hub1ApipaInstance0) }
+        @{ ipconfigurationId = "Instance1"; customBgpIpAddresses = @($Hub1ApipaInstance1) }
+    )
+    $hub1Gw.properties.enableBgpRouteTranslationForNat = $true
     $hub1GwBody = @{
-        location = $Location
-        properties = @{
-            virtualHub = @{ id = $hub1Id }
-            bgpSettings = @{
-                asn = 65515
-                bgpPeeringAddresses = @(
-                    @{ ipconfigurationId = "Instance0"; customBgpIpAddresses = @($Hub1ApipaInstance0) }
-                    @{ ipconfigurationId = "Instance1"; customBgpIpAddresses = @($Hub1ApipaInstance1) }
-                )
-            }
-            enableBgpRouteTranslationForNat = $true
-        }
-    } | ConvertTo-Json -Depth 10 -Compress
+        location = $hub1Gw.location
+        properties = $hub1Gw.properties
+        tags = $hub1Gw.tags
+    } | ConvertTo-Json -Depth 20 -Compress
 
     $tempFile1 = [System.IO.Path]::GetTempFileName()
     $hub1GwBody | Out-File -FilePath $tempFile1 -Encoding utf8
@@ -234,20 +231,17 @@ else {
     # ── Step 2c: PUT APIPA on Hub2 gateway ───────────────────────────────────
     Write-Host "`n[Step 2c] Setting APIPA BGP on hub2-vpngw..." -ForegroundColor Cyan
 
+    # Merge APIPA into the full gateway object from Step 2a to preserve connections & NAT rules
+    $hub2Gw.properties.bgpSettings.bgpPeeringAddresses = @(
+        @{ ipconfigurationId = "Instance0"; customBgpIpAddresses = @($Hub2ApipaInstance0) }
+        @{ ipconfigurationId = "Instance1"; customBgpIpAddresses = @($Hub2ApipaInstance1) }
+    )
+    $hub2Gw.properties.enableBgpRouteTranslationForNat = $true
     $hub2GwBody = @{
-        location = $Location
-        properties = @{
-            virtualHub = @{ id = $hub2Id }
-            bgpSettings = @{
-                asn = 65515
-                bgpPeeringAddresses = @(
-                    @{ ipconfigurationId = "Instance0"; customBgpIpAddresses = @($Hub2ApipaInstance0) }
-                    @{ ipconfigurationId = "Instance1"; customBgpIpAddresses = @($Hub2ApipaInstance1) }
-                )
-            }
-            enableBgpRouteTranslationForNat = $true
-        }
-    } | ConvertTo-Json -Depth 10 -Compress
+        location = $hub2Gw.location
+        properties = $hub2Gw.properties
+        tags = $hub2Gw.tags
+    } | ConvertTo-Json -Depth 20 -Compress
 
     $tempFile2 = [System.IO.Path]::GetTempFileName()
     $hub2GwBody | Out-File -FilePath $tempFile2 -Encoding utf8

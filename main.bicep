@@ -10,7 +10,7 @@ param region2 string = 'westus3'
 param resourceGroupName string = 'vwan-vpn-nat-lab'
 
 @description('Virtual WAN name')
-param vwanName string = 'vwan-demo'
+param vwanName string = 'vwan-natdemo'
 
 @description('Hub 1 name')
 param hub1Name string = 'hub1'
